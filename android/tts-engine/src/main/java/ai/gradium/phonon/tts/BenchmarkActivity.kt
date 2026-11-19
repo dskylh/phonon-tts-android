@@ -211,8 +211,9 @@ class BenchmarkActivity : ComponentActivity() {
             return null
         }
         val loadMs = (SystemClock.elapsedRealtimeNanos() - t0) / 1e6
-        if ("default" in tts.voices) tts.setVoice("default")
-        return Handle("NPU · S23 bundle · en · default · ${tts.sampleRate} Hz", loadMs,
+        val voice = Npu.voice(applicationContext)
+        if (voice in tts.voices) tts.setVoice(voice)
+        return Handle("NPU · S23 bundle · en · $voice · ${tts.voices.size} voices · ${tts.sampleRate} Hz", loadMs,
             { text -> tts.speak(text) { !cancelled }.let { Run(it.samples, it.ttfaMs, it.totalMs) } }, { tts.close() })
     }
 

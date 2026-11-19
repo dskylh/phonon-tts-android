@@ -92,7 +92,8 @@ class SettingsActivity : ComponentActivity() {
                     }
                 },
                 deleteNpu = { if (!busy()) { stopPreview(); Npu.setEnabled(this, false); Npu.delete(this); refresh() } },
-                retryNpu = { stopPreview(); Npu.release(); refresh() }
+                retryNpu = { stopPreview(); Npu.release(); refresh() },
+                selectNpuVoice = { name -> stopPreview(); Npu.selectVoice(this, name); refresh() }
             ))
         }
         refresh()
@@ -210,7 +211,9 @@ class SettingsActivity : ComponentActivity() {
             operation = localError ?: InstallService.message,
             npu = NpuUiState(supported = Npu.supported(), installed = Npu.installed(this),
                 enabled = Npu.enabled(this) && Npu.installed(this), failed = Npu.failure != null,
-                status = if (Npu.supported()) Npu.status(this) else "", soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else "unknown"),
+                status = if (Npu.supported()) Npu.status(this) else "", soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else "unknown",
+                voices = if (Npu.supported()) Npu.voices(this) else emptyList(), voice = if (Npu.supported()) Npu.voice(this) else "",
+                outdated = Npu.supported() && Npu.outdated(this)),
             speaking = ui.speaking && preview?.isSpeaking == true)
     }
     override fun onResume() { super.onResume(); resumed = true; handler.post(poll) }

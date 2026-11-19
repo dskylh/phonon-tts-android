@@ -41,7 +41,8 @@ internal data class SettingsUiState(
 /** The speech-engine card: CPU everywhere, the NPU only where its bundle was compiled for the SoC. */
 internal data class NpuUiState(
     val supported: Boolean = false, val installed: Boolean = false, val enabled: Boolean = false,
-    val failed: Boolean = false, val status: String = "", val soc: String = ""
+    val failed: Boolean = false, val status: String = "", val soc: String = "",
+    val voices: List<Npu.Voice> = emptyList(), val voice: String = "", val outdated: Boolean = false
 )
 internal data class SettingsActions(
     val deleteInstalled: (String) -> Unit,
@@ -55,7 +56,8 @@ internal data class SettingsActions(
     val systemSettings: () -> Unit, val confirmReplacement: () -> Unit,
     val dismissReplacement: () -> Unit, val licenses: () -> Unit, val dismissLicenses: () -> Unit,
     val benchmark: () -> Unit,
-    val selectEngine: (Boolean) -> Unit, val downloadNpu: () -> Unit, val deleteNpu: () -> Unit, val retryNpu: () -> Unit
+    val selectEngine: (Boolean) -> Unit, val downloadNpu: () -> Unit, val deleteNpu: () -> Unit, val retryNpu: () -> Unit,
+    val selectNpuVoice: (String) -> Unit
 )
 
 private val SageLight = lightColorScheme(
@@ -238,7 +240,7 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
                 ModelChoiceRow("CPU", "Works on every phone, every language and every voice.",
                     selected = !npu.enabled, enabled = !state.busy, onClick = { actions.selectEngine(false) })
                 ModelChoiceRow("NPU (neural processor)",
-                    if (npu.supported) "Faster and lighter on the processor. English only, default voice; other languages use the CPU."
+                    if (npu.supported) "About 2.5x faster than the CPU. English only, with its own voices (below); other languages use the CPU."
                     else "Not available on this phone (${npu.soc}): the NPU model is compiled for the Galaxy S23 (SM8550).",
                     selected = npu.enabled, enabled = !state.busy && npu.supported && npu.installed,
                     onClick = { actions.selectEngine(true) },
@@ -247,9 +249,10 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
             if (npu.status.isNotBlank()) Text(npu.status, Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (npu.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            if (npu.supported && npu.installed && npu.voices.isNotEmpty()) NpuVoiceSelect(npu, enabled = !state.busy, onSelect = actions.selectNpuVoice)
             if (npu.supported) {
                 if (!npu.installed) FilledTonalButton(onClick = actions.downloadNpu, enabled = !state.busy,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Download NPU model (69.5 MB)") }
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(if (npu.outdated) "Update NPU model (${Npu.SIZE_LABEL})" else "Download NPU model (${Npu.SIZE_LABEL})") }
                 else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (npu.failed) OutlinedButton(onClick = actions.retryNpu, enabled = !state.busy) { Text("Retry NPU") }
                     TextButton(onClick = { confirmDelete = true }, enabled = !state.busy) { Text("Delete NPU model") }
@@ -262,6 +265,41 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
         text = { Text("Speech switches to the CPU. You can download the NPU model again later.") },
         confirmButton = { TextButton(onClick = { confirmDelete = false; actions.deleteNpu() }) { Text("Delete") } },
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(stringResource(android.R.string.cancel)) } })
+}
+
+/** The NPU's English voices, grouped female, male, character. Used for English whenever the NPU is on. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun NpuVoiceSelect(npu: NpuUiState, enabled: Boolean, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val current = npu.voices.firstOrNull { it.name == npu.voice }
+    fun detail(v: Npu.Voice) = listOfNotNull(v.group, v.accent).joinToString(" · ")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (enabled) expanded = it }) {
+            OutlinedTextField(value = current?.let { "${it.name} · ${detail(it)}" } ?: npu.voice, onValueChange = {}, readOnly = true, enabled = enabled,
+                label = { Text("NPU voice (English)") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth())
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                var group: String? = null
+                npu.voices.forEach { v ->
+                    if (v.group != group) {
+                        group = v.group
+                        Text(v.group, Modifier.padding(horizontal = 16.dp, vertical = 8.dp).semantics { heading() },
+                            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    }
+                    DropdownMenuItem(
+                        text = { Column {
+                            Text(v.name + (if (v.name == npu.voice) "  ✓" else ""))
+                            if (v.description.isNotBlank()) Text(v.description, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        } },
+                        onClick = { onSelect(v.name); expanded = false })
+                }
+            }
+        }
+        current?.description?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable private fun SectionLabel(text: String) {

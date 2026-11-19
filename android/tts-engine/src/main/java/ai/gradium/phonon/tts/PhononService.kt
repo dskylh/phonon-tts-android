@@ -87,7 +87,7 @@ class PhononService : TextToSpeechService() {
                     if (android.os.Build.VERSION.SDK_INT >= 26) callback.rangeStart(frame, start, end)
                 },
             ).speak(text, Locale.forLanguageTag(lang))
-            // The NPU speaks English in its one voice. If it is unavailable, fails to load, or fails
+            // The NPU speaks English in the NPU voice picked in settings (Zoey by default). If it is unavailable, fails to load, or fails
             // before any audio went out, the CPU speaks instead (Npu disables itself after a failure).
             val onNpu = if (Npu.wanted(this, lang)) {
                 try { Npu.use(this) { npu -> sentences { sentence, pcm -> npu.speak(sentence, pcm) } } }

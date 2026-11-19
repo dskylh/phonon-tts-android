@@ -58,11 +58,11 @@ for voice in legacy['voices']:
     assert current['sha256'] == voice['sha256'] and current['bytes'] == voice['bytes']
 assert not list(assets.rglob('*.safetensors'))
 ui = (app / 'src/main/java/ai/gradium/phonon/tts/SettingsScreen.kt').read_text()
-assert ui.count('ModelChoiceRow(') == 3  # two callers, one shared implementation
+assert ui.count('ModelChoiceRow(') == 5  # two model pickers, two engine choices, one shared implementation
 row = ui[ui.index('private fun ModelChoiceRow'):]
 assert 'verticalAlignment = Alignment.CenterVertically' in row
 assert 'Alignment.Top' not in row and 'onClick = null' in row
-assert ui.count('.selectableGroup()') == 2
+assert ui.count('.selectableGroup()') == 3  # two model pickers and the speech-engine choice
 print('PASS: 102 pinned public voice metadata entries, no embedding assets, 5 language counts, original German identities; shared centered model row')
 
 assert 'VoicePacks.download' not in ui

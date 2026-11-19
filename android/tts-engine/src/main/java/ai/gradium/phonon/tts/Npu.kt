@@ -12,12 +12,13 @@ import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.zip.ZipInputStream
+import org.json.JSONObject
 import javax.net.ssl.HttpsURLConnection
 import ai.gradium.phonon.PhononTTS as NpuTTS
 
 /**
  * Phonon on the Snapdragon NPU (Qualcomm HTP), for the one phone this bundle was compiled for:
- * SoC SM8550 (Galaxy S23). English only, one voice. Everywhere else, and whenever loading fails,
+ * SoC SM8550 (Galaxy S23). English only, with the bundle's voices (Zoey, female, by default). Everywhere else, and whenever loading fails,
  * speech stays on the CPU engine.
  *
  * Every native NPU call holds [lock]: the engine allows one speak at a time and no close during one.
@@ -25,25 +26,84 @@ import ai.gradium.phonon.PhononTTS as NpuTTS
 object Npu {
     private const val TAG = "PhononNpu"
     const val SOC = "SM8550"
-    private const val BUNDLE = "npu-s23-v1"
+    private const val BUNDLE = "npu-s23-v2"
+    private val OLD_BUNDLES = listOf("npu-s23-v1")
     // Pinned: a new bundle gets a new release tag, URL and hash.
     private const val URL_ZIP =
-        "https://github.com/dskylh/phonon-tts-android/releases/download/npu-bundle-s23-v1/phonon-npu-s23-bundle.zip"
-    private const val ZIP_SIZE = 69_535_222L
-    private const val ZIP_SHA256 = "4c6c2fe6b2a6fa209cf597d26218bd5e91bb23e379737a3e1e32daf1a6800b86"
+        "https://github.com/dskylh/phonon-tts-android/releases/download/npu-bundle-s23-v2/phonon-npu-s23-bundle-v2.zip"
+    private const val ZIP_SIZE = 120_863_862L
+    const val SIZE_LABEL = "121 MB"
+    private const val ZIP_SHA256 = "40f45abf0794dcea0903a1b7fa49789a549e31cb78d94b637a46905e757e96c0"
     private const val UNPACKED_LIMIT = 200L * 1024 * 1024
     private val HOSTS = setOf("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
-    private val REQUIRED = listOf("metadata.json", "phonon-sm8550.bin", "tokenizer.json", "bos.bin", "voices/default.bin")
+    private val REQUIRED = listOf("metadata.json", "phonon-sm8550.bin", "tokenizer.json", "bos.bin")
+    /** Must be female: used when nothing is saved or the saved voice is gone. */
+    const val DEFAULT_VOICE = "Zoey"
+
+    /** A voice from the bundle's metadata.json. [gender] is null for character voices. */
+    data class Voice(val name: String, val gender: String?, val category: String, val locale: String?, val description: String) {
+        val group get() = when { category == "character" -> "Character"; gender == "female" -> "Female"; gender == "male" -> "Male"; else -> "Other" }
+        val accent get() = when (locale) { "en-us" -> "American"; "en-gb" -> "British"; else -> null }
+    }
 
     val lock = Any()
     @Volatile private var engine: NpuTTS? = null
     /** Why the NPU is unusable in this process, after a load or speak failure. */
     @Volatile var failure: String? = null; private set
     @Volatile var lastLoadMs: Double = 0.0; private set
+    @Volatile private var activeVoice: String? = null
+    @Volatile private var catalog: Pair<File, List<Voice>>? = null
 
     fun supported(): Boolean = Build.VERSION.SDK_INT >= 31 && Build.SOC_MODEL.uppercase(Locale.ROOT) == SOC
     fun dir(context: Context) = File(context.filesDir, "phonon/$BUNDLE")
-    fun installed(context: Context) = REQUIRED.all { File(dir(context), it).isFile }
+    fun installed(context: Context) = REQUIRED.all { File(dir(context), it).isFile } && voices(context).isNotEmpty()
+    /** An older bundle is on the phone but not the current one: the user has to download again. */
+    fun outdated(context: Context) = !installed(context) && OLD_BUNDLES.any { File(context.filesDir, "phonon/$it").isDirectory }
+
+    /** The bundle's voices whose files are present, female first, then male, then characters. */
+    fun voices(context: Context): List<Voice> {
+        val dir = dir(context)
+        catalog?.takeIf { it.first == dir }?.let { return it.second }
+        val list = readVoices(dir)
+        if (list.isNotEmpty()) catalog = dir to list
+        return list
+    }
+
+    private fun readVoices(dir: File): List<Voice> = try {
+        val array = JSONObject(File(dir, "metadata.json").readText()).getJSONArray("voices")
+        val order = listOf("Female", "Male", "Character", "Other")
+        List(array.length()) { array.getJSONObject(it) }.mapNotNull { v ->
+            val file = v.optString("file")
+            if (file.isEmpty() || file.startsWith("/") || ".." in file.split('/') || !File(dir, file).isFile) return@mapNotNull null
+            Voice(v.getString("name"), v.optString("gender").takeIf { !v.isNull("gender") && it.isNotEmpty() },
+                v.optString("category", "standard"), v.optString("locale").takeIf { !v.isNull("locale") && it.isNotEmpty() },
+                v.optString("description"))
+        }.sortedBy { order.indexOf(it.group) }  // stable: keeps the bundle's order inside a group
+    } catch (e: Exception) {
+        Log.w(TAG, "Cannot read the NPU voices", e)
+        emptyList()
+    }
+
+    /** The saved NPU voice if the bundle has it, else Zoey, else the first female voice. Never a male fallback. */
+    fun voice(context: Context): String {
+        val voices = voices(context)
+        val names = voices.map { it.name }
+        return prefs(context).getString("voice", null)?.takeIf { it in names }
+            ?: DEFAULT_VOICE.takeIf { it in names }
+            ?: voices.firstOrNull { it.gender == "female" }?.name
+            ?: DEFAULT_VOICE
+    }
+    fun selectVoice(context: Context, name: String) {
+        prefs(context).edit().putString("voice", name).apply()
+    }
+
+    /** Switch the loaded engine to [name] if it is not already using it. Caller holds [lock]. */
+    fun applyVoice(tts: NpuTTS, name: String) {
+        if (activeVoice == name) return
+        if (name in tts.voices) tts.setVoice(name)
+        else tts.voices.firstOrNull { it == DEFAULT_VOICE }?.let { tts.setVoice(it) }
+        activeVoice = name
+    }
 
     private fun prefs(context: Context) = context.getSharedPreferences("npu", Context.MODE_PRIVATE)
     fun enabled(context: Context) = prefs(context).getBoolean("enabled", false)
@@ -64,8 +124,9 @@ object Npu {
             val t0 = SystemClock.elapsedRealtimeNanos()
             val tts = NpuTTS.load(context.applicationContext, dir(context), "en")
             lastLoadMs = (SystemClock.elapsedRealtimeNanos() - t0) / 1e6
-            if ("default" in tts.voices) tts.setVoice("default")
-            Log.i(TAG, "NPU engine loaded in ${lastLoadMs.toInt()} ms, voices ${tts.voices}")
+            activeVoice = null
+            applyVoice(tts, voice(context))
+            Log.i(TAG, "NPU engine loaded in ${lastLoadMs.toInt()} ms, ${tts.voices.size} voices, using $activeVoice")
             engine = tts
             tts
         } catch (t: Throwable) {
@@ -80,7 +141,7 @@ object Npu {
      */
     fun <T> use(context: Context, work: (NpuTTS) -> T): T? = synchronized(lock) {
         val tts = get(context) ?: return null
-        try { work(tts) } catch (t: Throwable) {
+        try { applyVoice(tts, voice(context)); work(tts) } catch (t: Throwable) {
             fail("speak", t)
             throw t
         }
@@ -91,36 +152,44 @@ object Npu {
         failure = "$stage: ${t.javaClass.simpleName}: ${t.message}"
         try { engine?.close() } catch (_: Throwable) {}
         engine = null
+        activeVoice = null
     }
 
     /** Close the engine and allow a fresh load (also clears a previous failure). */
     fun release() = synchronized(lock) {
         try { engine?.close() } catch (_: Throwable) {}
         engine = null
+        activeVoice = null
         failure = null
     }
 
     fun delete(context: Context) = synchronized(lock) {
         release()
         dir(context).deleteRecursively()
+        deleteOld(context)
+        catalog = null
     }
+
+    private fun deleteOld(context: Context) = OLD_BUNDLES.forEach { File(context.filesDir, "phonon/$it").deleteRecursively() }
 
     /** Download the pinned bundle, check its size and SHA-256, and unpack it. Blocks; call off the main thread. */
     fun download(context: Context, cancelled: () -> Boolean, progress: (Long, Long) -> Unit) {
         val root = File(context.filesDir, "phonon").apply { mkdirs() }
-        require(root.usableSpace > ZIP_SIZE + UNPACKED_LIMIT) { "Not enough storage (needs about 170 MB free)" }
+        deleteOld(context)
+        require(root.usableSpace > ZIP_SIZE + UNPACKED_LIMIT) { "Not enough storage (needs about 330 MB free)" }
         val zip = File(root, "$BUNDLE.zip.part")
         val staging = File(root, "$BUNDLE.staging")
         try {
             fetch(zip, cancelled, progress)
             if (cancelled()) throw CancellationException()
             unpack(zip, staging, cancelled)
-            check(REQUIRED.all { File(staging, it).isFile }) { "Bundle is missing files" }
+            check(REQUIRED.all { File(staging, it).isFile } && readVoices(staging).any { it.name == DEFAULT_VOICE }) { "Bundle is missing files" }
             synchronized(lock) {
                 release()
                 val target = dir(context)
                 target.deleteRecursively()
                 check(staging.renameTo(target)) { "Cannot install the bundle" }
+                catalog = null
             }
         } finally {
             zip.delete()
@@ -212,9 +281,10 @@ object Npu {
     fun status(context: Context): String = when {
         Build.VERSION.SDK_INT < 31 -> "Needs Android 12 or newer."
         !supported() -> "This NPU model is compiled for $SOC only; this phone is ${Build.SOC_MODEL}."
-        !installed(context) -> "NPU model not downloaded (69.5 MB)."
+        outdated(context) -> "A newer NPU model with 37 voices is available. Download it to keep using the NPU ($SIZE_LABEL)."
+        !installed(context) -> "NPU model not downloaded ($SIZE_LABEL)."
         failure != null -> "NPU failed, using CPU: $failure"
-        engine != null -> "NPU model loaded (${lastLoadMs.toInt()} ms)."
+        engine != null -> "NPU model loaded (${lastLoadMs.toInt()} ms), voice ${voice(context)}."
         else -> "NPU model downloaded."
     }
 }

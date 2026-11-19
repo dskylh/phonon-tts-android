@@ -74,7 +74,7 @@ class BenchmarkActivity : ComponentActivity() {
         var runs by remember { mutableStateOf("5") }
         var seconds by remember { mutableStateOf("120") }
         var chapter by remember { mutableStateOf("") }
-        var minutes by remember { mutableStateOf("10") }
+        var minutes by remember { mutableStateOf("3") }
         MaterialTheme(colorScheme = colors) {
             Surface(Modifier.fillMaxSize()) {
                 Column(
@@ -133,14 +133,14 @@ class BenchmarkActivity : ComponentActivity() {
                     Text("Reads the chapter aloud through the system speech service, one paragraph at a time like " +
                         "Reikai. Three phases of the same length: idle (nothing playing), CPU, then NPU. Unplug the " +
                         "phone, set the volume low and keep the screen the way you read (on or off) for the whole " +
-                        "test; it records how long the screen was on. Total time is 3 × the minutes below.", style = MaterialTheme.typography.bodySmall)
+                        "test; it records how long the screen was on. A short chapter just repeats. Total time is 3 × the minutes below.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(chapter, { chapter = it }, label = { Text("Chapter text (${chapter.length} characters, " +
                         "${chapter.lines().count { it.isNotBlank() }} paragraphs)") },
                         enabled = !running, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(minutes, { minutes = it.filter(Char::isDigit).take(2) },
                         label = { Text("Minutes per phase") }, enabled = !running, singleLine = true,
                         modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                    Button(onClick = { val c = chapter; start { listenTest(c, minutes.toIntOrNull()?.coerceIn(2, 30) ?: 10) } },
+                    Button(onClick = { val c = chapter; start { listenTest(c, minutes.toIntOrNull()?.coerceIn(2, 30) ?: 3) } },
                         enabled = !running && chapter.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
                         Text("Run listening test (idle, CPU, NPU)")
                     }

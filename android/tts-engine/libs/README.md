@@ -64,51 +64,78 @@ skel is loaded from.
 
 ## Model bundle (GitHub release asset)
 
-The model is not in the repository. It is a release asset of this repo:
+The model is not in the repository. **Use v2:**
 
-- Release: https://github.com/dskylh/phonon-tts-android/releases/tag/npu-bundle-s23-v1
-- Download: https://github.com/dskylh/phonon-tts-android/releases/download/npu-bundle-s23-v1/phonon-npu-s23-bundle.zip
-- Size 69,535,222 bytes (89 MB unpacked), sha256 `4c6c2fe6b2a6fa209cf597d26218bd5e91bb23e379737a3e1e32daf1a6800b86`
+- Release: https://github.com/dskylh/phonon-tts-android/releases/tag/npu-bundle-s23-v2
+- Download: https://github.com/dskylh/phonon-tts-android/releases/download/npu-bundle-s23-v2/phonon-npu-s23-bundle-v2.zip
+- Size 120,863,862 bytes (138 MB unpacked), sha256 `40f45abf0794dcea0903a1b7fa49789a549e31cb78d94b637a46905e757e96c0`
+
+v1 (`npu-bundle-s23-v1`, one unnamed voice) is superseded; do not use it. Same `phonon-sm8550.bin` in both.
 
 ```
-Archive:  phonon-npu-s23-bundle.zip
+Archive:  phonon-npu-s23-bundle-v2.zip
   Length      Date    Time    Name
 ---------  ---------- -----   ----
-        0  11-19-2026 21:50   voices/
-  1536000  11-19-2026 21:50   voices/default.bin
-        0  11-19-2026 21:50   lib/
-        0  11-19-2026 21:50   lib/android-arm64/
-  3778728  11-19-2026 21:50   lib/android-arm64/libptts_text.so
-        0  11-19-2026 21:50   lib/linux-arm64/
- 83619840  11-19-2026 21:50   phonon-sm8550.bin
-   277967  11-19-2026 21:50   tokenizer.json
-     1024  11-19-2026 21:50   bos.bin
-     5101  11-19-2026 21:50   metadata.json
-    11357  11-19-2026 22:22   LICENSE
-      679  11-19-2026 22:22   NOTICE
+        0  11-19-2026 22:43   voices/
+        0  11-19-2026 22:43   lib/
+        0  11-19-2026 22:43   lib/android-arm64/
+  3778728  11-19-2026 22:43   lib/android-arm64/libptts_text.so
+        0  11-19-2026 22:43   lib/linux-arm64/
+ 83619840  11-19-2026 22:43   phonon-sm8550.bin
+   277967  11-19-2026 22:43   tokenizer.json
+     1024  11-19-2026 22:43   bos.bin
+    24696  11-19-2026 22:43   metadata.json
+    11357  11-19-2026 22:44   LICENSE
+      856  11-19-2026 22:44   NOTICE
 ---------                     -------
- 89230696                     12 files
+144546468                     48 files
 ```
+(plus 37 `voices/<Name>.bin`, 1,536,000 bytes each)
 
-How the app should use it:
+### Voices
+
+37 English voices from [gradium/phonon-voices](https://huggingface.co/gradium/phonon-voices) (Apache-2.0):
+
+| gender | voices |
+|---|---|
+| female (13) | **Zoey** (en-us, default), Juniper, Everly, Harper, Hadley, Delia (en-us); Maeve, Freya, Pippa, Elodie-Rose, Imogen, Lottie, Bryony (en-gb) |
+| male (12) | Alfie, Easton, Edwin, Hugh, Micah, Miles, Preston, Russell, Spencer, Teddy, Toby, Trevor |
+| character (12) | Captain Silas Blackwater, Morwenna of the Deep, Old Mortlake, Azgorath, Fennick the Young Elf, The Thing Under the Stairs, Vyrmathrax the Ancient, Grub the Ogre, Master Aldric, The Snow Queen, Sir Bramwell, Fairy Godmother |
+
+Each `metadata.json` voice entry: `name` (what `setVoice` takes; may contain spaces), `display_name`,
+`gender` (`"female"`, `"male"`, or null for characters), `category` (`"standard"` / `"character"`),
+`locale` (`"en-us"`, `"en-gb"`, null for characters), `age`, `description`, `voice_id`, `language`,
+`file`, `length` (125 for all). Top level: `"default_voice": "Zoey"`.
+
+**The default voice must be female.** Zoey is first in the list and there is no voice named `default`,
+so the engine's fallback (`speak` without `setVoice` uses a voice named "default", else the first one)
+is Zoey; verified on the phone (output bit-identical to `--voice Zoey`). Still, call
+`tts.setVoice(savedChoice ?: "Zoey")` explicitly after `load`, and never fall back to a male voice. A
+voice picker can group by `gender` / `category` and show `description`. The engine does not read
+`default_voice`, `gender` etc.; they are for the app (parse `metadata.json` from the bundle directory).
+
+The engine loads every voice into memory at `load`: peak RSS 151 MiB with 37 voices vs 98 MiB with one.
+Speed and load time are unchanged (18.3-18.4x real time, measured with Zoey, Maeve and The Snow Queen).
+
+### Fetching it in the app
 
 1. Check `Build.SOC_MODEL` before downloading: this bundle only loads on `SM8550` (`metadata.json`
    `"soc_models": ["SM8550"]`; `PhononTTS.load` compares the upper-cased `Build.SOC_MODEL` exactly).
    Other phones need their own bundle, compiled for their SoC, or the CPU engine.
 2. Download the zip (no auth; GitHub redirects to a CDN URL, so follow redirects), verify the sha256,
-   unzip into app-private storage (e.g. `filesDir/phonon/npu-s23-v1/`), then delete the zip. Unzip with a
+   unzip into app-private storage (e.g. `filesDir/phonon/npu-s23-v2/`), then delete the zip. Unzip with a
    path check against zip-slip. Write to a temporary directory and rename it when complete, so an
    interrupted download never leaves a half bundle that `load` would try.
-3. Pass that directory to `PhononTTS.load(context, dir, "en")` on a worker thread.
-4. Pin the URL and sha256 in the app. A new bundle gets a new release tag rather than replacing this asset.
+3. Pass that directory to `PhononTTS.load(context, dir, "en")` on a worker thread, then `setVoice`.
+4. Pin the URL and sha256 in the app. A new bundle gets a new release tag rather than replacing an asset.
 
 `lib/android-arm64/libptts_text.so` in the zip is not used: the AAR loads its own copy, and a download
 cannot supply executable code to the app. `lib/linux-arm64/` is empty.
 
-License: the model (gradium/phonon-31m-en) is Apache-2.0. `LICENSE` and `NOTICE` (source and changes)
-are inside the zip; keep them with the bundle and show the model's license and attribution in the app's
-open-source notices. The 40M Phonon models are CC BY-NC 4.0 and could not be used this way in a
-commercial app; this bundle is the 31M Apache model.
+License: the model (gradium/phonon-31m-en) and the voices (gradium/phonon-voices) are Apache-2.0.
+`LICENSE` and `NOTICE` (sources and changes) are inside the zip; keep them with the bundle and list both
+in the app's open-source notices. The 40M Phonon models are CC BY-NC 4.0 and could not be used this way in
+a commercial app; this bundle is the 31M Apache model.
 
 ## Facts measured on the phone
 
@@ -147,12 +174,10 @@ normalization and is split into chunks of at most 50 tokens (`max_tokens_per_chu
 each chunk is one prefill followed by steps until EOS plus 2 frames (4 for texts of up to 4 words), capped
 at `ceil((tokens / 3 + 2) * 12.5)` frames. Return false from the callback or call `stop()` to cancel.
 
-**Voices**: the bundle has one voice, `default` (the checkpoint's `default-voice.safetensors`). A voice
-file is raw fp16 `[2 * layers, heads, n, head_dim]` = `[12, 8, 125, 64]`, 1,536,000 bytes: the voice
-prompt's keys and values, computed on the host by running the backbone in fp32 (`host.voice_cache`).
-CPU-model voices (`.safetensors` with `emb` or `speaker_wavs`) convert without an NPU export or
-compile: put them in `PHONON_VOICES` and rerun `qnn/export/bundle.py`, which writes one `.bin` per
-voice and lists it in `metadata.json`.
+**Voices**: see "Voices" above. A voice file is raw fp16 `[2 * layers, heads, n, head_dim]` =
+`[12, 8, 125, 64]`, 1,536,000 bytes: the voice prompt's keys and values, computed on the host by running
+the backbone in fp32 (`host.voice_cache`). More voices need no NPU export or compile: put the
+`.safetensors` in `PHONON_VOICES` and rerun `qnn/export/bundle.py` on the PC.
 
 **Quality**: AI Hub per-call check on a real S23 (PC fp16 inputs replayed through the context binary,
 prefill x1, step x24): prefill kv_new rel. error 6.3e-3; step kv_new 7.6e-3, latent 9.5e-3, EOS logits

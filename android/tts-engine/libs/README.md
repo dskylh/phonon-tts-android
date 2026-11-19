@@ -62,11 +62,13 @@ The AAR manifest declares `<uses-native-library android:name="libcdsprpc.so" and
 The JNI loader prepends the app's native library directory to `ADSP_LIBRARY_PATH`, which is where the
 skel is loaded from.
 
-## Model bundle (not in this repo)
+## Model bundle (GitHub release asset)
 
-The working S23 bundle is kept off-repo (`phonon-npu-s23-bundle.zip`, 89 MB unpacked), sha256
-`fe901525a16f863f2fcbb46f1aea5035d2d9f6b96d00cc29d25792eaed9ea093`. Unzip it into a directory and pass
-that directory to `PhononTTS.load`.
+The model is not in the repository. It is a release asset of this repo:
+
+- Release: https://github.com/dskylh/phonon-tts-android/releases/tag/npu-bundle-s23-v1
+- Download: https://github.com/dskylh/phonon-tts-android/releases/download/npu-bundle-s23-v1/phonon-npu-s23-bundle.zip
+- Size 69,535,222 bytes (89 MB unpacked), sha256 `4c6c2fe6b2a6fa209cf597d26218bd5e91bb23e379737a3e1e32daf1a6800b86`
 
 ```
 Archive:  phonon-npu-s23-bundle.zip
@@ -82,13 +84,31 @@ Archive:  phonon-npu-s23-bundle.zip
    277967  11-19-2026 21:50   tokenizer.json
      1024  11-19-2026 21:50   bos.bin
      5101  11-19-2026 21:50   metadata.json
+    11357  11-19-2026 22:22   LICENSE
+      679  11-19-2026 22:22   NOTICE
 ---------                     -------
- 89218660                     10 files
+ 89230696                     12 files
 ```
 
-`lib/android-arm64/libptts_text.so` in the bundle is not used by the AAR (the AAR loads its own copy).
-`metadata.json` lists `"soc_models": ["SM8550"]`, which `PhononTTS.load` matches against
-`Build.SOC_MODEL`.
+How the app should use it:
+
+1. Check `Build.SOC_MODEL` before downloading: this bundle only loads on `SM8550` (`metadata.json`
+   `"soc_models": ["SM8550"]`; `PhononTTS.load` compares the upper-cased `Build.SOC_MODEL` exactly).
+   Other phones need their own bundle, compiled for their SoC, or the CPU engine.
+2. Download the zip (no auth; GitHub redirects to a CDN URL, so follow redirects), verify the sha256,
+   unzip into app-private storage (e.g. `filesDir/phonon/npu-s23-v1/`), then delete the zip. Unzip with a
+   path check against zip-slip. Write to a temporary directory and rename it when complete, so an
+   interrupted download never leaves a half bundle that `load` would try.
+3. Pass that directory to `PhononTTS.load(context, dir, "en")` on a worker thread.
+4. Pin the URL and sha256 in the app. A new bundle gets a new release tag rather than replacing this asset.
+
+`lib/android-arm64/libptts_text.so` in the zip is not used: the AAR loads its own copy, and a download
+cannot supply executable code to the app. `lib/linux-arm64/` is empty.
+
+License: the model (gradium/phonon-31m-en) is Apache-2.0. `LICENSE` and `NOTICE` (source and changes)
+are inside the zip; keep them with the bundle and show the model's license and attribution in the app's
+open-source notices. The 40M Phonon models are CC BY-NC 4.0 and could not be used this way in a
+commercial app; this bundle is the 31M Apache model.
 
 ## Facts measured on the phone
 

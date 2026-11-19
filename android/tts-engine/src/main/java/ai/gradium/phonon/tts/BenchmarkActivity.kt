@@ -12,6 +12,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -71,6 +73,8 @@ class BenchmarkActivity : ComponentActivity() {
         var text by remember { mutableStateOf(DEFAULT_TEXT) }
         var runs by remember { mutableStateOf("5") }
         var seconds by remember { mutableStateOf("120") }
+        var chapter by remember { mutableStateOf("") }
+        var minutes by remember { mutableStateOf("10") }
         MaterialTheme(colorScheme = colors) {
             Surface(Modifier.fillMaxSize()) {
                 Column(
@@ -124,6 +128,22 @@ class BenchmarkActivity : ComponentActivity() {
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run speed test") }
                     FilledTonalButton(onClick = { val npu = onNpu; start { batteryTest(npu, text, seconds.toIntOrNull()?.coerceIn(20, 1800) ?: 120) } },
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run battery test") }
+                    HorizontalDivider()
+                    Text("Listening test", style = MaterialTheme.typography.titleMedium)
+                    Text("Reads the chapter aloud through the system speech service, one paragraph at a time like " +
+                        "Reikai. Three phases of the same length: idle (nothing playing), CPU, then NPU. Unplug the " +
+                        "phone, set the volume low and keep the screen the way you read (on or off) for the whole " +
+                        "test; it records how long the screen was on. Total time is 3 × the minutes below.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(chapter, { chapter = it }, label = { Text("Chapter text (${chapter.length} characters, " +
+                        "${chapter.lines().count { it.isNotBlank() }} paragraphs)") },
+                        enabled = !running, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(minutes, { minutes = it.filter(Char::isDigit).take(2) },
+                        label = { Text("Minutes per phase") }, enabled = !running, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    Button(onClick = { val c = chapter; start { listenTest(c, minutes.toIntOrNull()?.coerceIn(2, 30) ?: 10) } },
+                        enabled = !running && chapter.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                        Text("Run listening test (idle, CPU, NPU)")
+                    }
                     if (running) OutlinedButton(onClick = { cancelled = true }, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
                     OutlinedButton(onClick = { copy() }, enabled = !running, modifier = Modifier.fillMaxWidth()) { Text("Copy results") }
                     HorizontalDivider()
@@ -285,14 +305,118 @@ class BenchmarkActivity : ComponentActivity() {
         log("Thermal at end: ${thermal()}")
     }
 
-    private class Reading(val meanMa: Double, val samples: Int, val counterMah: Double?, val unit: String)
+    /**
+     * Read [chapter] aloud through Android's TextToSpeech with this app as the engine, one paragraph
+     * per speak() and waiting for each to finish, as Reikai does. Phases of [minutes] each: idle
+     * (CPU awake, nothing playing), CPU engine, NPU engine; the screen is left as the user sets it. Same text from the start in
+     * each phase. A partial wake lock is held throughout, since playback keeps the CPU awake anyway.
+     */
+    private fun listenTest(chapter: String, minutes: Int) {
+        val paragraphs = chapter.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val sentences = paragraphs.sumOf { SentenceSpans.split(it, Locale.ENGLISH).size }
+        val seconds = minutes * 60
+        val npuReady = Npu.supported() && Npu.installed(applicationContext)
+        log("")
+        log("== Listening test · ${paragraphs.size} paragraphs · $sentences sentences · " +
+            "${fmt(chapter.length.toDouble() / sentences.coerceAtLeast(1), 0)} chars per sentence · " +
+            "${fmt(chapter.length.toDouble() / paragraphs.size, 0)} per paragraph · $minutes min per phase")
+        if (charging()) log("WARNING: the phone is charging; current readings are meaningless. Unplug it.")
+        if (!npuReady) log("NPU model not available: the NPU phase is skipped.")
+        val npuWas = Npu.enabled(applicationContext)
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val lock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "phonon:listen-test")
+        // The paragraph being spoken and its latch; callbacks for any other utterance are ignored.
+        val finished = java.util.concurrent.atomic.AtomicReference<Pair<String, java.util.concurrent.CountDownLatch>?>(null)
+        fun end(id: String?) { finished.get()?.takeIf { it.first == id }?.second?.countDown() }
+        val failed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val ready = java.util.concurrent.CountDownLatch(1)
+        var initStatus = TextToSpeech.ERROR
+        val tts = TextToSpeech(applicationContext, { initStatus = it; ready.countDown() }, packageName)
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(id: String?) {}
+            override fun onDone(id: String?) = end(id)
+            @Deprecated("Deprecated in Java") override fun onError(id: String?) { if (finished.get()?.first == id) failed.set(true); end(id) }
+            override fun onError(id: String?, code: Int) { if (finished.get()?.first == id) failed.set(true); end(id) }
+            override fun onStop(id: String?, interrupted: Boolean) = end(id)
+        })
+        ListenTestService.start(applicationContext)
+        lock.acquire(4 * 60 * 60 * 1000L)
+        runOnUiThread { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        try {
+            if (!ready.await(30, java.util.concurrent.TimeUnit.SECONDS) || initStatus != TextToSpeech.SUCCESS) {
+                log("Could not start the speech service."); return
+            }
+            tts.language = Locale.US
+            log("Starting in 10 s. Set the screen the way you read (on or off) and keep it that way for the whole test.")
+            for (i in 0 until 10) { if (cancelled) { log("Cancelled."); return }; Thread.sleep(1000) }
+            log("Thermal at start: ${thermal()}")
+
+            fun screenNote(r: Reading) = " · screen on ${100 * r.screenOn / seconds}% of the time"
+            val idle = sample(seconds, intervalMs = 1000) { !cancelled }
+            if (cancelled) { log("Cancelled."); return }
+            log("Idle (nothing playing): ${fmt(idle.meanMa, 0)} mA (${idle.samples} samples)${screenNote(idle)}")
+
+            class Phase(val name: String, val reading: Reading, val paragraphs: Int, val npu: Long, val cpu: Long)
+            fun listen(npu: Boolean): Phase? {
+                Npu.setEnabled(applicationContext, npu)
+                var next = 0
+                var spoken = 0
+                val npu0 = SpeechStats.npu.get(); val cpu0 = SpeechStats.cpu.get()
+                failed.set(false)
+                val reading = sample(seconds, intervalMs = 1000, onEnd = { tts.stop(); finished.get()?.second?.countDown() }, background = work@{
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    val id = "${if (npu) "npu" else "cpu"}-$next"
+                    finished.set(id to latch)
+                    tts.speak(paragraphs[next % paragraphs.size], TextToSpeech.QUEUE_ADD, null, id)
+                    next++
+                    while (!latch.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)) if (cancelled) { tts.stop(); return@work }
+                    if (!failed.get()) spoken++
+                }) { !cancelled }
+                if (cancelled) { log("Cancelled."); return null }
+                val name = if (npu) "NPU (${Npu.voice(applicationContext)})" else "CPU (threads=${Threads.active ?: Threads.configured(applicationContext)})"
+                val phase = Phase(name, reading, spoken, SpeechStats.npu.get() - npu0, SpeechStats.cpu.get() - cpu0)
+                log("$name: ${fmt(reading.meanMa, 0)} mA (${reading.samples} samples) · ${phase.paragraphs} paragraphs · " +
+                    "sentences on NPU ${phase.npu}, on CPU ${phase.cpu}${if (failed.get()) " · some paragraphs failed" else ""}${screenNote(reading)}")
+                log("Thermal: ${thermal()}")
+                return phase
+            }
+            val phases = listOfNotNull(listen(false) ?: return, if (npuReady) (listen(true) ?: return) else null)
+
+            val capacity = capacityMah()
+            fun share(mah: Double) = capacity?.let { " (${fmt(100 * mah / it, 2)}%)" } ?: ""
+            log("")
+            val screens = (listOf(idle) + phases.map { it.reading }).map { 100 * it.screenOn / seconds }
+            if (screens.max() - screens.min() > 10)
+                log("WARNING: the screen was on for different shares of each phase (${screens.joinToString("/")}%); the comparison is skewed.")
+            log("Per hour of listening (everything included, screen as during the test):")
+            for (p in phases) log("  ${p.name}: ${fmt(p.reading.meanMa, 0)} mAh${share(p.reading.meanMa)} · " +
+                "extra over idle ${fmt(p.reading.meanMa - idle.meanMa, 0)} mAh${share(p.reading.meanMa - idle.meanMa)}")
+            if (phases.size == 2) {
+                val (cpu, npu) = phases
+                val saved = cpu.reading.meanMa - npu.reading.meanMa
+                log("  NPU vs CPU: ${if (saved >= 0) "saves" else "costs"} ${fmt(abs(saved), 0)} mAh per hour${share(abs(saved))}")
+                if (npu.npu == 0L) log("WARNING: nothing ran on the NPU in the NPU phase; check the NPU status in settings.")
+            }
+            capacity?.let { log("Battery capacity estimate: ${fmt(it, 0)} mAh") }
+            log("Percentages use that estimate. Hours of listening on a full battery = capacity ÷ mAh per hour.")
+        } finally {
+            Npu.setEnabled(applicationContext, npuWas)
+            tts.stop(); tts.shutdown()
+            if (lock.isHeld) lock.release()
+            ListenTestService.stop(applicationContext)
+        }
+    }
+
+    /** [screenOn]: seconds the screen was on during the sampling (only checked by the listening test). */
+    private class Reading(val meanMa: Double, val samples: Int, val counterMah: Double?, val unit: String, val screenOn: Int = 0)
 
     /**
      * Sample the battery current every 250 ms for [seconds]. With [background], run it in a loop
      * on another thread meanwhile. BATTERY_PROPERTY_CURRENT_NOW is specified in µA, but some
      * devices report mA; values that are implausibly small for µA are read as mA.
      */
-    private fun sample(seconds: Int, background: (() -> Unit)? = null, keepGoing: () -> Boolean): Reading {
+    private fun sample(seconds: Int, background: (() -> Unit)? = null, intervalMs: Long = 250,
+        onEnd: (() -> Unit)? = null, keepGoing: () -> Boolean): Reading {
         val battery = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val counterStart = battery.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
         val end = SystemClock.elapsedRealtime() + seconds * 1000L
@@ -304,14 +428,18 @@ class BenchmarkActivity : ComponentActivity() {
             }.apply { start() }
         }
         val raw = mutableListOf<Long>()
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        var screenOnMs = 0L
         try {
             while (SystemClock.elapsedRealtime() < end && keepGoing() && failure.get() == null) {
                 val value = battery.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
                 if (value != Long.MIN_VALUE && value != 0L) raw += abs(value)
-                Thread.sleep(250)
+                if (power.isInteractive) screenOnMs += intervalMs
+                Thread.sleep(intervalMs)
             }
         } finally {
             done.set(true)
+            onEnd?.invoke()
             load?.join()
         }
         failure.get()?.let { throw it }
@@ -320,7 +448,7 @@ class BenchmarkActivity : ComponentActivity() {
         val milliamps = median in 1 until 20_000
         val mean = if (raw.isEmpty()) 0.0 else raw.average() / (if (milliamps) 1.0 else 1000.0)
         val counter = if (counterStart > 0 && counterEnd > 0) (counterStart - counterEnd) / 1000.0 else null
-        return Reading(mean, raw.size, counter, if (milliamps) "mA (device-specific)" else "µA (Android standard)")
+        return Reading(mean, raw.size, counter, if (milliamps) "mA (device-specific)" else "µA (Android standard)", (screenOnMs / 1000).toInt())
     }
 
     private fun capacityMah(): Double? {

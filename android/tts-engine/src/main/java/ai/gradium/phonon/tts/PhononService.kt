@@ -90,13 +90,13 @@ class PhononService : TextToSpeechService() {
             // The NPU speaks English in the NPU voice picked in settings (Zoey by default). If it is unavailable, fails to load, or fails
             // before any audio went out, the CPU speaks instead (Npu disables itself after a failure).
             val onNpu = if (Npu.wanted(this, lang)) {
-                try { Npu.use(this) { npu -> sentences { sentence, pcm -> npu.speak(sentence, pcm) } } }
+                try { Npu.use(this) { npu -> sentences { sentence, pcm -> SpeechStats.npu.incrementAndGet(); npu.speak(sentence, pcm) } } }
                 catch (e: Exception) { if (sent || stopped) throw e; Log.w(TAG, "NPU failed, retrying on the CPU", e); null }
             } else null
             val result = onNpu ?: Model.use(this,choice.entry) { model ->
                 model.tts.setLanguage(lang)
                 if (speaker in model.speakers) model.tts.setVoice(speaker)
-                sentences { sentence, pcm -> model.tts.speak(sentence, pcm) }
+                sentences { sentence, pcm -> SpeechStats.cpu.incrementAndGet(); model.tts.speak(sentence, pcm) }
             }
             when (result) {
                 SentenceSpeech.Result.COMPLETE -> if (!stopped) callback.done()

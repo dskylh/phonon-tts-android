@@ -101,7 +101,9 @@ jobs:
           keystore="$RUNNER_TEMP/signing.keystore"
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$keystore"
+            signer="permanent key (installs over earlier builds signed with it)"
           else
+            signer="throwaway key (uninstall the previous build first)"
             echo "::warning::No signing secrets: using a throwaway key. Uninstall the previous Phonon S23 build before installing this one."
             KEYSTORE_PASSWORD=$(openssl rand -hex 16); KEY_PASSWORD=$KEYSTORE_PASSWORD; KEY_ALIAS=throwaway
             keytool -genkeypair -keystore "$keystore" -storetype PKCS12 -storepass "$KEYSTORE_PASSWORD" \
@@ -117,6 +119,7 @@ jobs:
           (cd out && sha256sum "$name" > "$name.sha256")
           echo "### Phonon S23 build $GITHUB_RUN_NUMBER" >> "$GITHUB_STEP_SUMMARY"
           echo "Features: \`$ARM64_FEATURES\` · SHA-256: \`$(cut -d' ' -f1 out/$name.sha256)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signed with: $signer" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:

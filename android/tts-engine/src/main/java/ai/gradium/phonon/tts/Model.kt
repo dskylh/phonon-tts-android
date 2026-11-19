@@ -1,6 +1,6 @@
 package ai.gradium.phonon.tts
 
-import ai.gradium.phonon.PhononTTS
+import ai.gradium.phonon.cpu.PhononTTS
 import android.content.Context
 import org.json.JSONObject
 import java.io.File

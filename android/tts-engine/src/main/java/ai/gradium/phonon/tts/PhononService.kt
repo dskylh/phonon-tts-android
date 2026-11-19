@@ -79,17 +79,24 @@ class PhononService : TextToSpeechService() {
             return
         }
         try {
-            val result = Model.use(this,choice.entry) { model ->
+            var sent = false
+            fun sentences(synthesize: (String, (FloatArray) -> Boolean) -> Unit) = SentenceSpeech(
+                request.speechRate, callback.maxBufferSize, { stopped }, synthesize,
+                { bytes, n -> sent = true; callback.audioAvailable(bytes, 0, n) == TextToSpeech.SUCCESS },
+                { frame, start, end ->
+                    if (android.os.Build.VERSION.SDK_INT >= 26) callback.rangeStart(frame, start, end)
+                },
+            ).speak(text, Locale.forLanguageTag(lang))
+            // The NPU speaks English in its one voice. If it is unavailable, fails to load, or fails
+            // before any audio went out, the CPU speaks instead (Npu disables itself after a failure).
+            val onNpu = if (Npu.wanted(this, lang)) {
+                try { Npu.use(this) { npu -> sentences { sentence, pcm -> npu.speak(sentence, pcm) } } }
+                catch (e: Exception) { if (sent || stopped) throw e; Log.w(TAG, "NPU failed, retrying on the CPU", e); null }
+            } else null
+            val result = onNpu ?: Model.use(this,choice.entry) { model ->
                 model.tts.setLanguage(lang)
                 if (speaker in model.speakers) model.tts.setVoice(speaker)
-                SentenceSpeech(
-                    request.speechRate, callback.maxBufferSize, { stopped },
-                    { sentence, pcm -> model.tts.speak(sentence, pcm) },
-                    { bytes, n -> callback.audioAvailable(bytes, 0, n) == TextToSpeech.SUCCESS },
-                    { frame, start, end ->
-                        if (android.os.Build.VERSION.SDK_INT >= 26) callback.rangeStart(frame, start, end)
-                    },
-                ).speak(text, Locale.forLanguageTag(lang))
+                sentences { sentence, pcm -> model.tts.speak(sentence, pcm) }
             }
             when (result) {
                 SentenceSpeech.Result.COMPLETE -> if (!stopped) callback.done()

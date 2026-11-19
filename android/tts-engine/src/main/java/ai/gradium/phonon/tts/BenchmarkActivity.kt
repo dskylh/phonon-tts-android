@@ -1,6 +1,7 @@
 package ai.gradium.phonon.tts
 
-import ai.gradium.phonon.PhononTTS
+import ai.gradium.phonon.PhononTTS as NpuTTS
+import ai.gradium.phonon.cpu.PhononTTS
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -42,6 +43,7 @@ class BenchmarkActivity : ComponentActivity() {
     private var lines by mutableStateOf(listOf<String>())
     private var running by mutableStateOf(false)
     private var threads by mutableStateOf(2)
+    private var onNpu by mutableStateOf(false)
     @Volatile private var cancelled = false
     private var worker: Thread? = null
 
@@ -49,6 +51,7 @@ class BenchmarkActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         threads = Threads.configured(this)
+        onNpu = Npu.enabled(this) && Npu.installed(this)
         lines = listOf(deviceLine())
         setContent { BenchmarkScreen() }
     }
@@ -74,7 +77,7 @@ class BenchmarkActivity : ComponentActivity() {
                     Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("CPU benchmark", style = MaterialTheme.typography.headlineSmall)
+                    Text("Benchmark", style = MaterialTheme.typography.headlineSmall)
                     Text(
                         "Only generation is measured, nothing is played. For the battery test, unplug the " +
                             "phone, keep the screen on and leave it alone: idle current is measured first and " +
@@ -92,10 +95,20 @@ class BenchmarkActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
-                    Text("Threads (also used when reading aloud): " + (Threads.active?.let { "$it in use" } ?: "not loaded yet"),
+                    val npuReady = Npu.supported() && Npu.installed(this@BenchmarkActivity)
+                    Text("Engine to test", style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!onNpu) Button(onClick = {}, enabled = !running) { Text("CPU") }
+                        else OutlinedButton(onClick = { onNpu = false }, enabled = !running) { Text("CPU") }
+                        if (onNpu) Button(onClick = {}, enabled = !running) { Text("NPU") }
+                        else OutlinedButton(onClick = { onNpu = true }, enabled = !running && npuReady) { Text("NPU") }
+                    }
+                    if (!npuReady) Text(if (Npu.supported()) "Download the NPU model in settings to test the NPU."
+                        else "The NPU model only runs on ${Npu.SOC} (Galaxy S23).", style = MaterialTheme.typography.bodySmall)
+                    if (!onNpu) Text("CPU threads (also used when reading aloud): " + (Threads.active?.let { "$it in use" } ?: "not loaded yet"),
                         style = MaterialTheme.typography.bodyMedium)
                     var pending by remember { mutableStateOf(threads) }
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    if (!onNpu) Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Slider(value = pending.toFloat(), onValueChange = { pending = kotlin.math.round(it).toInt() },
                             valueRange = 1f..Threads.MAX.toFloat(), steps = (Threads.MAX - 2).coerceAtLeast(0),
@@ -103,13 +116,13 @@ class BenchmarkActivity : ComponentActivity() {
                         Text("$pending", style = MaterialTheme.typography.titleMedium)
                     }
                     val changes = pending != threads || (Threads.active != null && Threads.active != pending)
-                    OutlinedButton(onClick = { pickThreads(pending) }, enabled = !running && changes,
+                    if (!onNpu) OutlinedButton(onClick = { pickThreads(pending) }, enabled = !running && changes,
                         modifier = Modifier.fillMaxWidth()) {
                         Text(if (Threads.active == null) "Use $pending threads" else "Use $pending threads (restarts the app)")
                     }
-                    Button(onClick = { start { speedTest(text, runs.toIntOrNull()?.coerceIn(2, 50) ?: 5) } },
+                    Button(onClick = { val npu = onNpu; start { speedTest(npu, text, runs.toIntOrNull()?.coerceIn(2, 50) ?: 5) } },
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run speed test") }
-                    FilledTonalButton(onClick = { start { batteryTest(text, seconds.toIntOrNull()?.coerceIn(20, 1800) ?: 120) } },
+                    FilledTonalButton(onClick = { val npu = onNpu; start { batteryTest(npu, text, seconds.toIntOrNull()?.coerceIn(20, 1800) ?: 120) } },
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run battery test") }
                     if (running) OutlinedButton(onClick = { cancelled = true }, modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
                     OutlinedButton(onClick = { copy() }, enabled = !running, modifier = Modifier.fillMaxWidth()) { Text("Copy results") }
@@ -161,10 +174,16 @@ class BenchmarkActivity : ComponentActivity() {
 
     private fun log(line: String) = runOnUiThread { lines = lines + line }
 
-    private class Handle(val tts: PhononTTS, val loadMs: Double, val label: String)
+    private class Run(val samples: Long, val ttfaMs: Double, val totalMs: Double)
+    private class Handle(val label: String, val loadMs: Double, val speak: (String) -> Run, val close: () -> Unit)
 
-    /** Open the selected checkpoint in its own handle, timing the load. Caller holds [Model.lifecycle]. */
-    private fun open(): Handle? {
+    /** Open a fresh engine (CPU or NPU), timing the load, run [work] with it, then close it. */
+    private fun <T> withEngine(npu: Boolean, work: (Handle) -> T): T? =
+        if (npu) synchronized(Npu.lock) { openNpu()?.let { h -> try { work(h) } finally { h.close() } } }
+        else synchronized(Model.lifecycle) { openCpu()?.let { h -> try { work(h) } finally { h.close() } } }
+
+    /** The selected CPU checkpoint in its own handle. Caller holds [Model.lifecycle]. */
+    private fun openCpu(): Handle? {
         val entry = Model.selected(applicationContext) ?: run { log("No model installed."); return null }
         val lang = entry.languages.firstOrNull { it == "en" } ?: entry.languages.firstOrNull() ?: "none"
         // The same thread count the engine uses: the native pool reads it once per process.
@@ -175,70 +194,92 @@ class BenchmarkActivity : ComponentActivity() {
         val loadMs = (SystemClock.elapsedRealtimeNanos() - t0) / 1e6
         val speaker = BundledVoices.selectedMetadata(applicationContext, entry, lang)
         if (speaker in tts.voices) tts.setVoice(speaker)
-        return Handle(tts, loadMs, "${entry.id} · $lang · ${BundledVoices.label(speaker)}")
+        return Handle("CPU · ${entry.id} · $lang · ${BundledVoices.label(speaker)} · threads=${Threads.active}", loadMs,
+            { text -> tts.speak(text) { !cancelled }.let { Run(it.samples, it.ttfaMs, it.totalMs) } }, { tts.close() })
     }
 
-    private fun speedTest(text: String, runs: Int) {
+    /** The NPU bundle in a fresh engine (the system engine's copy is closed first). Caller holds [Npu.lock]. */
+    private fun openNpu(): Handle? {
+        if (!Npu.supported() || !Npu.installed(applicationContext)) { log("NPU model not available on this phone."); return null }
+        Npu.release()
+        val t0 = SystemClock.elapsedRealtimeNanos()
+        val tts = try { NpuTTS.load(applicationContext, Npu.dir(applicationContext), "en") } catch (t: Throwable) {
+            log("NPU load failed: $t")
+            var cause = t.cause
+            while (cause != null) { log("  caused by: $cause"); cause = cause.cause }
+            log("  See logcat (tags PhononNpu, QNN, ptts) for details.")
+            return null
+        }
+        val loadMs = (SystemClock.elapsedRealtimeNanos() - t0) / 1e6
+        if ("default" in tts.voices) tts.setVoice("default")
+        return Handle("NPU · S23 bundle · en · default · ${tts.sampleRate} Hz", loadMs,
+            { text -> tts.speak(text) { !cancelled }.let { Run(it.samples, it.ttfaMs, it.totalMs) } }, { tts.close() })
+    }
+
+    private fun speedTest(npu: Boolean, text: String, runs: Int) {
         log("")
-        log("== Speed test · ${text.length} chars · $runs runs · threads=${Threads.active ?: Threads.configured(applicationContext)}")
+        log("== Speed test · ${if (npu) "NPU" else "CPU"} · ${text.length} chars · $runs runs")
         log("Thermal at start: ${thermal()}")
-        synchronized(Model.lifecycle) {
-            val handle = open() ?: return
-            try {
-                log("Model: ${handle.label}")
-                log("Load time: ${fmt(handle.loadMs / 1000, 2)} s")
-                val results = mutableListOf<PhononTTS.Result>()
-                for (i in 0 until runs) {
-                    if (cancelled) { log("Cancelled."); return }
-                    val r = handle.tts.speak(text) { !cancelled }
-                    results += r
-                    log("Run ${i + 1}: TTFA ${fmt(r.ttfaMs, 0)} ms · ${fmt(rtfx(r), 2)}x · ${fmt(audioSeconds(r), 1)} s audio")
-                }
-                val cold = results.first()
-                val warm = results.drop(1)
-                log("TTFA (cold): ${fmt(cold.ttfaMs, 0)} ms")
-                log("RTFx (cold): ${fmt(rtfx(cold), 2)}x")
-                log("TTFA (warm): ${fmt(warm.map { it.ttfaMs }.average(), 0)} ms")
-                log("RTFx (warm): ${fmt(warm.sumOf { audioSeconds(it) } / warm.sumOf { it.totalMs / 1000 }, 2)}x")
-            } finally { handle.tts.close() }
+        withEngine(npu) { handle ->
+            log("Model: ${handle.label}")
+            log("Load time: ${fmt(handle.loadMs / 1000, 2)} s")
+            val results = mutableListOf<Run>()
+            for (i in 0 until runs) {
+                if (cancelled) { log("Cancelled."); return@withEngine }
+                val r = handle.speak(text)
+                results += r
+                log("Run ${i + 1}: TTFA ${fmt(r.ttfaMs, 0)} ms · ${fmt(rtfx(r), 2)}x · ${fmt(audioSeconds(r), 1)} s audio")
+            }
+            val cold = results.first()
+            val warm = results.drop(1)
+            log("TTFA (cold): ${fmt(cold.ttfaMs, 0)} ms")
+            log("RTFx (cold): ${fmt(rtfx(cold), 2)}x")
+            log("TTFA (warm): ${fmt(warm.map { it.ttfaMs }.average(), 0)} ms")
+            log("RTFx (warm): ${fmt(warm.sumOf { audioSeconds(it) } / warm.sumOf { it.totalMs / 1000 }, 2)}x")
         }
         log("Thermal at end: ${thermal()}")
     }
 
-    private fun batteryTest(text: String, seconds: Int) {
+    private fun batteryTest(npu: Boolean, text: String, seconds: Int) {
         log("")
-        log("== Battery test · ${seconds}s idle + ${seconds}s generating")
+        log("== Battery test · ${if (npu) "NPU" else "CPU threads=${Threads.active ?: Threads.configured(applicationContext)}"} · ${seconds}s idle + ${seconds}s generating")
         if (charging()) log("WARNING: the phone is charging; current readings are meaningless. Unplug it.")
         log("Thermal at start: ${thermal()}")
         val idle = sample(seconds) { !cancelled }
         if (cancelled) { log("Cancelled."); return }
         log("Idle: ${fmt(idle.meanMa, 0)} mA (${idle.samples} samples)")
-        synchronized(Model.lifecycle) {
-            val handle = open() ?: return
-            try {
-                log("Model: ${handle.label}")
-                var audio = 0.0
-                var busyMs = 0.0
-                val load = sample(seconds, background = {
-                    val r = handle.tts.speak(text) { !cancelled }
-                    audio += audioSeconds(r)
-                    busyMs += r.totalMs
-                }) { !cancelled }
-                if (cancelled) { log("Cancelled."); return }
-                val extra = load.meanMa - idle.meanMa
-                val speed = if (busyMs > 0) audio / (busyMs / 1000) else 0.0
-                log("Generating: ${fmt(load.meanMa, 0)} mA (${load.samples} samples), ${fmt(speed, 2)}x real time")
-                log("Battery usage (generation only): ${fmt(extra, 0)} mAh / hour of non-stop generation")
-                if (load.counterMah != null) log("Charge counter drop while generating: ${fmt(load.counterMah, 1)} mAh")
-                if (speed > 0) {
-                    val listening = extra / speed
-                    val capacity = capacityMah()
-                    val share = capacity?.let { " (≈${fmt(100 * listening / it, 2)}% of a ${fmt(it, 0)} mAh battery)" } ?: ""
-                    log("Estimated listening cost: ${fmt(listening, 0)} mAh per hour of audio$share")
-                    log("  = extra current ÷ speed; ignores wake-ups and playback itself.")
-                }
-                log("Current unit read as: ${load.unit}")
-            } finally { handle.tts.close() }
+        withEngine(npu) { handle ->
+            log("Model: ${handle.label}")
+            var audio = 0.0
+            var busyMs = 0.0
+            val load = sample(seconds, background = {
+                val r = handle.speak(text)
+                audio += audioSeconds(r)
+                busyMs += r.totalMs
+            }) { !cancelled }
+            if (cancelled) { log("Cancelled."); return@withEngine }
+            val extra = load.meanMa - idle.meanMa
+            val speed = if (busyMs > 0) audio / (busyMs / 1000) else 0.0
+            val capacity = capacityMah()
+            fun share(mah: Double) = capacity?.let { " (≈${fmt(100 * mah / it, 2)}% of a ${fmt(it, 0)} mAh battery)" } ?: ""
+            log("Generating: ${fmt(load.meanMa, 0)} mA (${load.samples} samples), ${fmt(speed, 2)}x real time")
+            log("Battery usage (generation only): ${fmt(extra, 0)} mAh / hour of non-stop generation")
+            if (speed > 0) {
+                log("Estimated listening cost: ${fmt(extra / speed, 0)} mAh per hour of audio${share(extra / speed)}")
+                log("  = extra current ÷ speed; ignores wake-ups and playback itself.")
+            }
+            // Cross-check with the battery's own charge counter over the same two windows.
+            val idleCounter = idle.counterMah?.let { it * 3600 / seconds }
+            val loadCounter = load.counterMah?.let { it * 3600 / seconds }
+            if (load.counterMah != null) log("Charge counter drop while generating: ${fmt(load.counterMah, 1)} mAh (≈${fmt(loadCounter!!, 0)} mA)")
+            if (idleCounter != null && loadCounter != null && speed > 0) {
+                val counterExtra = loadCounter - idleCounter
+                log("By charge counter: idle ≈${fmt(idleCounter, 0)} mA, extra ≈${fmt(counterExtra, 0)} mA, " +
+                    "listening ≈${fmt(counterExtra / speed, 0)} mAh/h${share(counterExtra / speed)}")
+                if (load.meanMa > 0 && kotlin.math.abs(loadCounter - load.meanMa) > 0.25 * load.meanMa)
+                    log("WARNING: current readings and charge counter disagree by more than 25%; repeat the test.")
+            }
+            log("Current unit read as: ${load.unit}")
         }
         log("Thermal at end: ${thermal()}")
     }
@@ -295,8 +336,7 @@ class BenchmarkActivity : ComponentActivity() {
     }
 
     private fun thermal(): String {
-        if (Build.VERSION.SDK_INT < 29) return "unknown"
-        return when ((getSystemService(Context.POWER_SERVICE) as PowerManager).currentThermalStatus) {
+        val status = if (Build.VERSION.SDK_INT < 29) "unknown" else when ((getSystemService(Context.POWER_SERVICE) as PowerManager).currentThermalStatus) {
             PowerManager.THERMAL_STATUS_NONE -> "none"
             PowerManager.THERMAL_STATUS_LIGHT -> "light"
             PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
@@ -306,6 +346,14 @@ class BenchmarkActivity : ComponentActivity() {
             PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
             else -> "unknown"
         }
+        val temperature = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)?.takeIf { it != Int.MIN_VALUE }
+            ?.let { " · battery ${fmt(it / 10.0, 1)} °C" } ?: ""
+        // 0 = cool, 1 = about to throttle; NaN where the device does not report it.
+        val headroom = if (Build.VERSION.SDK_INT >= 30)
+            (getSystemService(Context.POWER_SERVICE) as PowerManager).getThermalHeadroom(10).takeIf { !it.isNaN() }
+                ?.let { " · headroom ${fmt(it.toDouble(), 2)}" } ?: "" else ""
+        return "throttling $status$temperature$headroom"
     }
 
     private fun deviceLine(): String {
@@ -326,8 +374,8 @@ class BenchmarkActivity : ComponentActivity() {
         const val DEFAULT_TEXT = "The old swordsman lowered his blade and smiled. \"You have grown strong, Lin Feng. " +
             "But strength alone will not save you from what waits beyond the northern gate.\""
 
-        fun audioSeconds(r: PhononTTS.Result) = r.samples / SAMPLE_RATE
-        fun rtfx(r: PhononTTS.Result) = if (r.totalMs > 0) audioSeconds(r) / (r.totalMs / 1000) else 0.0
+        fun audioSeconds(r: Run) = r.samples / SAMPLE_RATE
+        fun rtfx(r: Run) = if (r.totalMs > 0) audioSeconds(r) / (r.totalMs / 1000) else 0.0
         fun fmt(value: Double, digits: Int) = String.format(Locale.US, "%.${digits}f", value)
     }
 }

@@ -1,0 +1,7 @@
+Phonon on the Snapdragon NPU (optional download, Galaxy S23 only)
+
+Model: gradium/phonon-31m-en, Apache License 2.0, by Gradium.
+  Compiled for Qualcomm HTP (SM8550) from that model; the downloaded bundle keeps its LICENSE and NOTICE.
+NPU runtime library (libptts_qnn, libptts_text): gradium-ai/xn-ptts, MIT or Apache License 2.0.
+Qualcomm AI Engine Direct runtime (com.qualcomm.qti:qnn-runtime 2.50.0): distributed by Qualcomm
+  under its own license terms.

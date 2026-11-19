@@ -2,6 +2,7 @@ package ai.gradium.phonon.tts
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -74,9 +75,24 @@ class SettingsActivity : ComponentActivity() {
                 systemSettings = { startActivity(Intent("com.android.settings.TTS_SETTINGS")) },
                 confirmReplacement = { replacement.accept(busy()); ui = ui.copy(confirmReplacement = false); refresh() },
                 dismissReplacement = { replacement.cancel(); ui = ui.copy(confirmReplacement = false) },
-                licenses = { ui = ui.copy(licenseText = listOf("LICENSE-MIT", "LICENSE-APACHE", "Sonic-LICENSE.txt", "NOTICE.txt", "Voices-NOTICE.txt").joinToString("\n\n") { name -> name + "\n" + assets.open("licenses/$name").bufferedReader().use { it.readText() } }) },
+                licenses = { ui = ui.copy(licenseText = listOf("LICENSE-MIT", "LICENSE-APACHE", "Sonic-LICENSE.txt", "NOTICE.txt", "Voices-NOTICE.txt", "NPU-NOTICE.txt").joinToString("\n\n") { name -> name + "\n" + assets.open("licenses/$name").bufferedReader().use { it.readText() } }) },
                 dismissLicenses = { ui = ui.copy(licenseText = null) },
-                benchmark = { if (!busy()) { stopPreview(); startActivity(Intent(this, BenchmarkActivity::class.java)) } }
+                benchmark = { if (!busy()) { stopPreview(); startActivity(Intent(this, BenchmarkActivity::class.java)) } },
+                selectEngine = { npu -> if (!busy() && (!npu || (Npu.supported() && Npu.installed(this)))) { stopPreview(); Npu.setEnabled(this, npu); refresh() } },
+                downloadNpu = {
+                    if (!busy() && Npu.supported()) {
+                        val app = applicationContext
+                        localError = null
+                        stopPreview()
+                        InstallService.start(app, R.string.install_complete) {
+                            Npu.download(app, { InstallService.cancelled }) { done, total -> InstallService.packProgress(app, done, total) }
+                            Npu.setEnabled(app, true)
+                        }
+                        refresh()
+                    }
+                },
+                deleteNpu = { if (!busy()) { stopPreview(); Npu.setEnabled(this, false); Npu.delete(this); refresh() } },
+                retryNpu = { stopPreview(); Npu.release(); refresh() }
             ))
         }
         refresh()
@@ -192,6 +208,9 @@ class SettingsActivity : ComponentActivity() {
             deleting = InstallService.deleting, ready = selectedEntry != null && !busy(), busy = busy(), loading = state is Model.State.Loading,
             status = if (busy()) getString(if (InstallService.deleting) R.string.deleting_model else R.string.installing_model) else status, error = state is Model.State.Failed,
             operation = localError ?: InstallService.message,
+            npu = NpuUiState(supported = Npu.supported(), installed = Npu.installed(this),
+                enabled = Npu.enabled(this) && Npu.installed(this), failed = Npu.failure != null,
+                status = if (Npu.supported()) Npu.status(this) else "", soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else "unknown"),
             speaking = ui.speaking && preview?.isSpeaking == true)
     }
     override fun onResume() { super.onResume(); resumed = true; handler.post(poll) }

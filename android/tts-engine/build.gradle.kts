@@ -12,7 +12,11 @@ abstract class ShareWrapper : DefaultTask() {
 
     @TaskAction
     fun copy() {
-        source.get().asFile.copyTo(output.file("PhononTTS.kt").get().asFile, overwrite = true)
+        // The NPU library ships its own ai.gradium.phonon.PhononTTS, so the CPU wrapper moves to .cpu.
+        val text = source.get().asFile.readText()
+        val moved = text.replaceFirst("package ai.gradium.phonon\n", "package ai.gradium.phonon.cpu\n")
+        check(moved != text) { "PhononTTS.kt package line not found" }
+        output.file("PhononTTS.kt").get().asFile.writeText(moved)
     }
 }
 val shareWrapper = tasks.register<ShareWrapper>("shareWrapper") { source.set(file("../PhononTTS.kt")) }
@@ -46,6 +50,17 @@ android {
         }
     }
     buildFeatures { compose = true }
+    packaging {
+        jniLibs {
+            // PhononTTS.load (NPU) needs the QNN libraries extracted to the native library directory.
+            useLegacyPackaging = true
+            // qnn-runtime ships every backend and every Hexagon version; the S23 bundle needs only the
+            // HTP backend and the V73 stub/skel. HtpPrepare (85 MB) compiles graphs on the phone, which a
+            // precompiled context binary does not need.
+            excludes += listOf("libQnnGpu.so", "libQnnDsp*", "libQnnCpu.so", "libQnnSaver.so", "libQnnHtpPrepare.so",
+                "libQnnHtpV68*", "libQnnHtpV69*", "libQnnHtpV75*", "libQnnHtpV79*", "libQnnHtpV81*").map { "**/$it" }
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -62,6 +77,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     testImplementation("junit:junit:4.13.2")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
+    // Phonon on the Snapdragon NPU (see libs/README.md); the local AAR does not bring its POM dependency.
+    implementation(files("libs/ptts-release.aar"))
+    implementation("com.qualcomm.qti:qnn-runtime:2.50.0")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

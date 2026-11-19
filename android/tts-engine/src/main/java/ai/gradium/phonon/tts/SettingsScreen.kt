@@ -35,7 +35,13 @@ internal data class SettingsUiState(
     val voices: List<Pair<String, String>> = emptyList(), val selectedVoice: Int = 0,
     val sample: String = "", val rate: Int = 100, val speaking: Boolean = false,
     val previewError: String = "", val token: String = "", val tokenStatus: String = "",
-    val confirmReplacement: Boolean = false, val licenseText: String? = null
+    val confirmReplacement: Boolean = false, val licenseText: String? = null,
+    val npu: NpuUiState = NpuUiState()
+)
+/** The speech-engine card: CPU everywhere, the NPU only where its bundle was compiled for the SoC. */
+internal data class NpuUiState(
+    val supported: Boolean = false, val installed: Boolean = false, val enabled: Boolean = false,
+    val failed: Boolean = false, val status: String = "", val soc: String = ""
 )
 internal data class SettingsActions(
     val deleteInstalled: (String) -> Unit,
@@ -48,7 +54,8 @@ internal data class SettingsActions(
     val preview: () -> Unit, val stopPreview: () -> Unit, val terms: () -> Unit,
     val systemSettings: () -> Unit, val confirmReplacement: () -> Unit,
     val dismissReplacement: () -> Unit, val licenses: () -> Unit, val dismissLicenses: () -> Unit,
-    val benchmark: () -> Unit
+    val benchmark: () -> Unit,
+    val selectEngine: (Boolean) -> Unit, val downloadNpu: () -> Unit, val deleteNpu: () -> Unit, val retryNpu: () -> Unit
 )
 
 private val SageLight = lightColorScheme(
@@ -131,6 +138,7 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
                             if (state.busy && !state.deleting) OutlinedButton(onClick = actions.cancelInstall) { Text(stringResource(R.string.cancel)) }
                         }
                     }
+                    if (state.ready) EngineCard(state, actions)
                     if (state.ready) {
                         Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (dark) .35f else .28f)) {
                             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -163,7 +171,7 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = actions.systemSettings, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.system_settings)) }
                         TextButton(onClick = actions.licenses, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.licenses)) }
-                        TextButton(onClick = actions.benchmark, enabled = state.ready, modifier = Modifier.heightIn(min = 48.dp)) { Text("CPU benchmark") }
+                        TextButton(onClick = actions.benchmark, enabled = state.ready, modifier = Modifier.heightIn(min = 48.dp)) { Text("Benchmark (CPU and NPU)") }
                         Text(stringResource(R.string.about_fork), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.height(8.dp))
@@ -220,6 +228,42 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
             confirmButton = { TextButton(onClick = actions.dismissLicenses) { Text(stringResource(android.R.string.ok)) } }) }
     }
 }
+@Composable private fun EngineCard(state: SettingsUiState, actions: SettingsActions) {
+    val npu = state.npu
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    ElevatedCard(Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionLabel("Speech engine")
+            Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModelChoiceRow("CPU", "Works on every phone, every language and every voice.",
+                    selected = !npu.enabled, enabled = !state.busy, onClick = { actions.selectEngine(false) })
+                ModelChoiceRow("NPU (neural processor)",
+                    if (npu.supported) "Faster and lighter on the processor. English only, default voice; other languages use the CPU."
+                    else "Not available on this phone (${npu.soc}): the NPU model is compiled for the Galaxy S23 (SM8550).",
+                    selected = npu.enabled, enabled = !state.busy && npu.supported && npu.installed,
+                    onClick = { actions.selectEngine(true) },
+                    annotations = if (npu.supported && !npu.installed) listOf("Download the NPU model first.") else emptyList())
+            }
+            if (npu.status.isNotBlank()) Text(npu.status, Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (npu.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            if (npu.supported) {
+                if (!npu.installed) FilledTonalButton(onClick = actions.downloadNpu, enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Download NPU model (69.5 MB)") }
+                else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (npu.failed) OutlinedButton(onClick = actions.retryNpu, enabled = !state.busy) { Text("Retry NPU") }
+                    TextButton(onClick = { confirmDelete = true }, enabled = !state.busy) { Text("Delete NPU model") }
+                }
+            }
+        }
+    }
+    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
+        title = { Text("Delete the NPU model?") },
+        text = { Text("Speech switches to the CPU. You can download the NPU model again later.") },
+        confirmButton = { TextButton(onClick = { confirmDelete = false; actions.deleteNpu() }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(stringResource(android.R.string.cancel)) } })
+}
+
 @Composable private fun SectionLabel(text: String) {
     Text(text, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium)
 }

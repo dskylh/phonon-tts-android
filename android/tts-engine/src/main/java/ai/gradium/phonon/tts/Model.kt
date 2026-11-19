@@ -2,7 +2,6 @@ package ai.gradium.phonon.tts
 
 import ai.gradium.phonon.PhononTTS
 import android.content.Context
-import android.system.Os
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
@@ -92,7 +91,7 @@ object Model {
         (state as? State.Ready)?.model?.takeIf { it.id == entry.id }?.let { return it }
         close(); state = State.Loading
         return try {
-            Os.setenv("RAYON_NUM_THREADS","2",false)
+            Threads.apply(context)
             BundledVoices.install(context,entry.directory,entry.languages)
             val tts = PhononTTS(entry.directory.path,entry.languages.firstOrNull() ?: "none")
             val loaded = try { Loaded(tts,tts.voices,entry.languages,entry.id) } catch(t: Throwable) { tts.close(); throw t }

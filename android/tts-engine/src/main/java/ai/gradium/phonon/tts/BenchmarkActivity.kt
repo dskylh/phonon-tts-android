@@ -11,7 +11,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
-import android.system.Os
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -42,12 +41,14 @@ import kotlin.math.abs
 class BenchmarkActivity : ComponentActivity() {
     private var lines by mutableStateOf(listOf<String>())
     private var running by mutableStateOf(false)
+    private var threads by mutableStateOf(2)
     @Volatile private var cancelled = false
     private var worker: Thread? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        threads = Threads.configured(this)
         lines = listOf(deviceLine())
         setContent { BenchmarkScreen() }
     }
@@ -91,6 +92,21 @@ class BenchmarkActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
+                    Text("Threads (also used when reading aloud): " + (Threads.active?.let { "$it in use" } ?: "not loaded yet"),
+                        style = MaterialTheme.typography.bodyMedium)
+                    var pending by remember { mutableStateOf(threads) }
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Slider(value = pending.toFloat(), onValueChange = { pending = kotlin.math.round(it).toInt() },
+                            valueRange = 1f..Threads.MAX.toFloat(), steps = (Threads.MAX - 2).coerceAtLeast(0),
+                            enabled = !running, modifier = Modifier.weight(1f))
+                        Text("$pending", style = MaterialTheme.typography.titleMedium)
+                    }
+                    val changes = pending != threads || (Threads.active != null && Threads.active != pending)
+                    OutlinedButton(onClick = { pickThreads(pending) }, enabled = !running && changes,
+                        modifier = Modifier.fillMaxWidth()) {
+                        Text(if (Threads.active == null) "Use $pending threads" else "Use $pending threads (restarts the app)")
+                    }
                     Button(onClick = { start { speedTest(text, runs.toIntOrNull()?.coerceIn(2, 50) ?: 5) } },
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run speed test") }
                     FilledTonalButton(onClick = { start { batteryTest(text, seconds.toIntOrNull()?.coerceIn(20, 1800) ?: 120) } },
@@ -109,6 +125,22 @@ class BenchmarkActivity : ComponentActivity() {
         androidx.compose.foundation.text.selection.SelectionContainer {
             Text(value, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
+    }
+
+    /**
+     * Save a thread count. The native pool only reads it at startup, so if one is already in use
+     * this relaunches the benchmark in a fresh process.
+     */
+    private fun pickThreads(choice: Int) {
+        if (running) return
+        threads = choice
+        Threads.save(this, choice)
+        val active = Threads.active ?: return
+        if (active == choice) return
+        // Relaunch in a fresh process so the native pool starts with the new count.
+        startActivity(Intent(this, BenchmarkActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun start(task: () -> Unit) {
@@ -136,7 +168,7 @@ class BenchmarkActivity : ComponentActivity() {
         val entry = Model.selected(applicationContext) ?: run { log("No model installed."); return null }
         val lang = entry.languages.firstOrNull { it == "en" } ?: entry.languages.firstOrNull() ?: "none"
         // The same thread count the engine uses: the native pool reads it once per process.
-        Os.setenv("RAYON_NUM_THREADS", "2", false)
+        Threads.apply(applicationContext)
         BundledVoices.install(applicationContext, entry.directory, entry.languages)
         val t0 = SystemClock.elapsedRealtimeNanos()
         val tts = PhononTTS(entry.directory.path, lang)
@@ -148,7 +180,7 @@ class BenchmarkActivity : ComponentActivity() {
 
     private fun speedTest(text: String, runs: Int) {
         log("")
-        log("== Speed test · ${text.length} chars · $runs runs · threads=${System.getenv("RAYON_NUM_THREADS") ?: "default"}")
+        log("== Speed test · ${text.length} chars · $runs runs · threads=${Threads.active ?: Threads.configured(applicationContext)}")
         log("Thermal at start: ${thermal()}")
         synchronized(Model.lifecycle) {
             val handle = open() ?: return

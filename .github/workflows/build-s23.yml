@@ -83,11 +83,28 @@ jobs:
       - name: APK
         working-directory: android/tts-engine
         run: |
-          ./gradlew --no-daemon assembleRelease \
-            -PphononIdSuffix=.s23 \
-            "-PphononLabel=Phonon S23" \
-            -PphononVersionCode=$((1000 + GITHUB_RUN_NUMBER)) \
-            -PphononVersionSuffix=-s23.$GITHUB_RUN_NUMBER
+          # Maven Central sometimes answers runners with "not found" for artifacts that exist.
+          # Add Google's mirror of Central as a fallback and retry with fresh lookups.
+          cat > "$RUNNER_TEMP/mirror.init.gradle" <<'INIT'
+          settingsEvaluated { settings ->
+              def mirror = { repos -> repos.maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") } }
+              mirror(settings.pluginManagement.repositories)
+              mirror(settings.dependencyResolutionManagement.repositories)
+          }
+          INIT
+          for attempt in 1 2 3; do
+            refresh=""; [ "$attempt" -gt 1 ] && refresh="--refresh-dependencies"
+            if ./gradlew --no-daemon -I "$RUNNER_TEMP/mirror.init.gradle" $refresh assembleRelease \
+                -PphononIdSuffix=.s23 \
+                "-PphononLabel=Phonon S23" \
+                -PphononVersionCode=$((1000 + GITHUB_RUN_NUMBER)) \
+                -PphononVersionSuffix=-s23.$GITHUB_RUN_NUMBER; then
+              exit 0
+            fi
+            echo "::warning::Gradle attempt $attempt failed; retrying in $((attempt * 30)) s."
+            sleep $((attempt * 30))
+          done
+          exit 1
 
       - name: Sign
         env:

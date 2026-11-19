@@ -26,5 +26,8 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$COMMON -C target-cpu=gener
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="$COMMON -C target-cpu=x86-64"
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
 rm -rf android/jniLibs
-cargo ndk --platform 24 -t arm64-v8a -t x86_64 -o android/jniLibs build --release -p ptts-ffi "${resolution[@]}"
+# ANDROID_ABIS narrows the build, e.g. to arm64-v8a only for a single phone.
+targets=()
+for abi in ${ANDROID_ABIS:-arm64-v8a x86_64}; do targets+=(-t "$abi"); done
+cargo ndk --platform 24 "${targets[@]}" -o android/jniLibs build --release -p ptts-ffi "${resolution[@]}"
 du -sh android/jniLibs/*/libptts_ffi.so

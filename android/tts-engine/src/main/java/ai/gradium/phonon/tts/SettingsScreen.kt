@@ -47,7 +47,8 @@ internal data class SettingsActions(
     val download: () -> Unit, val importModel: () -> Unit, val cancelInstall: () -> Unit,
     val preview: () -> Unit, val stopPreview: () -> Unit, val terms: () -> Unit,
     val systemSettings: () -> Unit, val confirmReplacement: () -> Unit,
-    val dismissReplacement: () -> Unit, val licenses: () -> Unit, val dismissLicenses: () -> Unit
+    val dismissReplacement: () -> Unit, val licenses: () -> Unit, val dismissLicenses: () -> Unit,
+    val benchmark: () -> Unit
 )
 
 private val SageLight = lightColorScheme(
@@ -162,6 +163,7 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = actions.systemSettings, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.system_settings)) }
                         TextButton(onClick = actions.licenses, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.licenses)) }
+                        TextButton(onClick = actions.benchmark, enabled = state.ready, modifier = Modifier.heightIn(min = 48.dp)) { Text("CPU benchmark") }
                         Text(stringResource(R.string.about_fork), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.height(8.dp))

@@ -28,8 +28,12 @@ android {
         targetSdk = 36
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         resourceConfigurations += listOf("en", "de", "fr", "es", "pt")
-        versionCode = 14
-        versionName = "1.1.0"
+        // Fork builds (see .github/workflows/build-s23.yml) install beside the upstream app:
+        // a distinct application id and label, and a version code that rises with every build.
+        providers.gradleProperty("phononIdSuffix").orNull?.let { applicationIdSuffix = it }
+        versionCode = providers.gradleProperty("phononVersionCode").orNull?.toInt() ?: 14
+        versionName = "1.1.0" + (providers.gradleProperty("phononVersionSuffix").orNull ?: "")
+        manifestPlaceholders["appLabel"] = providers.gradleProperty("phononLabel").orNull ?: "@string/app_name"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // What android/build.sh writes.

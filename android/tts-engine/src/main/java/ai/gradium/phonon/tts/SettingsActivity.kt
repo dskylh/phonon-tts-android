@@ -75,7 +75,8 @@ class SettingsActivity : ComponentActivity() {
                 confirmReplacement = { replacement.accept(busy()); ui = ui.copy(confirmReplacement = false); refresh() },
                 dismissReplacement = { replacement.cancel(); ui = ui.copy(confirmReplacement = false) },
                 licenses = { ui = ui.copy(licenseText = listOf("LICENSE-MIT", "LICENSE-APACHE", "Sonic-LICENSE.txt", "NOTICE.txt", "Voices-NOTICE.txt").joinToString("\n\n") { name -> name + "\n" + assets.open("licenses/$name").bufferedReader().use { it.readText() } }) },
-                dismissLicenses = { ui = ui.copy(licenseText = null) }
+                dismissLicenses = { ui = ui.copy(licenseText = null) },
+                benchmark = { if (!busy()) { stopPreview(); startActivity(Intent(this, BenchmarkActivity::class.java)) } }
             ))
         }
         refresh()

@@ -1,6 +1,27 @@
-# ptts-release.aar (Phonon on the Snapdragon NPU)
+# ptts-release.aar & kokoro-npu-release.aar (Snapdragon NPU engines)
 
 `ptts-release.aar`, sha256 `9b3fff7184041fe36796e1baa83b10464b3ec5967ad6fe0213550c2b7452b9c5`.
+`kokoro-npu-release.aar`, sha256 `af92e2454dc0ab46a88b2ec08223ee4988f980a3c7525dab4180ae2ae20579c2`.
+
+## kokoro-npu-release.aar (Kokoro-82M on the Snapdragon NPU)
+
+Contains `jni/arm64-v8a/`:
+- `libkokoro_npu.so`: JNI runner for Kokoro-82M (int8 ONNX CPU front end + harmonic source + iSTFT, QNN HTP v73 `vocoder_b32`/`vocoder_b128` context binary, streamed per window with supplied per-voice AdaIN statistics). Built with NDK r28c, QAIRT 2.50.0.260828 headers, ONNX Runtime 1.32.0 headers.
+- `libmisaki_android.so`: Apache-2.0 Rust Misaki English G2P (from `cedgeremek/kokoro-offline-tts-android` `native/misaki-android`).
+- `libespeak-ng.so`: eSpeak NG 1.52.0 (GPL-3.0-or-later), dynamically loaded by `libmisaki_android.so` for OOV pronunciation fallback.
+
+Runtime dependencies declared in `build.gradle.kts`:
+- `com.qualcomm.qti:qnn-runtime:2.50.0` (shared with Phonon NPU)
+- `com.microsoft.onnxruntime:onnxruntime-android:1.32.0`
+
+Model bundle (GitHub release asset):
+- Release: https://github.com/dskylh/phonon-tts-android/releases/tag/kokoro-npu-s23-v1
+- Download: https://github.com/dskylh/phonon-tts-android/releases/download/kokoro-npu-s23-v1/kokoro-npu-s23-bundle-v1.zip
+- Size: 96,053,206 bytes (131.5 MB unpacked), sha256 `6587add197f47049516984b602f43ef012d0b49628e84460a268fcbac066684f`
+
+---
+
+# ptts-release.aar (Phonon on the Snapdragon NPU)
 
 ## Build
 

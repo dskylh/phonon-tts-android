@@ -75,10 +75,17 @@ class SettingsActivity : ComponentActivity() {
                 systemSettings = { startActivity(Intent("com.android.settings.TTS_SETTINGS")) },
                 confirmReplacement = { replacement.accept(busy()); ui = ui.copy(confirmReplacement = false); refresh() },
                 dismissReplacement = { replacement.cancel(); ui = ui.copy(confirmReplacement = false) },
-                licenses = { ui = ui.copy(licenseText = listOf("LICENSE-MIT", "LICENSE-APACHE", "Sonic-LICENSE.txt", "NOTICE.txt", "Voices-NOTICE.txt", "NPU-NOTICE.txt").joinToString("\n\n") { name -> name + "\n" + assets.open("licenses/$name").bufferedReader().use { it.readText() } }) },
+                licenses = { ui = ui.copy(licenseText = listOf("LICENSE-MIT", "LICENSE-APACHE", "Sonic-LICENSE.txt", "NOTICE.txt", "Voices-NOTICE.txt", "NPU-NOTICE.txt", "KOKORO-NOTICE.txt").joinToString("\n\n") { name -> name + "\n" + assets.open("licenses/$name").bufferedReader().use { it.readText() } }) },
                 dismissLicenses = { ui = ui.copy(licenseText = null) },
                 benchmark = { if (!busy()) { stopPreview(); startActivity(Intent(this, BenchmarkActivity::class.java)) } },
-                selectEngine = { npu -> if (!busy() && (!npu || (Npu.supported() && Npu.installed(this)))) { stopPreview(); Npu.setEnabled(this, npu); refresh() } },
+                selectEngine = { choice ->
+                    val ok = when (choice) {
+                        SpeechEngine.CPU -> true
+                        SpeechEngine.PHONON_NPU -> Npu.supported() && Npu.installed(this)
+                        SpeechEngine.KOKORO_NPU -> Kokoro.supported() && Kokoro.installed(this)
+                    }
+                    if (!busy() && ok) { stopPreview(); Npu.setEngine(this, choice); refresh() }
+                },
                 downloadNpu = {
                     if (!busy() && Npu.supported()) {
                         val app = applicationContext
@@ -86,14 +93,29 @@ class SettingsActivity : ComponentActivity() {
                         stopPreview()
                         InstallService.start(app, R.string.install_complete) {
                             Npu.download(app, { InstallService.cancelled }) { done, total -> InstallService.packProgress(app, done, total) }
-                            Npu.setEnabled(app, true)
+                            Npu.setEngine(app, SpeechEngine.PHONON_NPU)
                         }
                         refresh()
                     }
                 },
-                deleteNpu = { if (!busy()) { stopPreview(); Npu.setEnabled(this, false); Npu.delete(this); refresh() } },
+                deleteNpu = { if (!busy()) { stopPreview(); if (Npu.engine(this) == SpeechEngine.PHONON_NPU) Npu.setEngine(this, SpeechEngine.CPU); Npu.delete(this); refresh() } },
                 retryNpu = { stopPreview(); Npu.release(); refresh() },
-                selectNpuVoice = { name -> stopPreview(); Npu.selectVoice(this, name); refresh() }
+                selectNpuVoice = { name -> stopPreview(); Npu.selectVoice(this, name); refresh() },
+                downloadKokoro = {
+                    if (!busy() && Kokoro.supported()) {
+                        val app = applicationContext
+                        localError = null
+                        stopPreview()
+                        InstallService.start(app, R.string.install_complete) {
+                            Kokoro.download(app, { InstallService.cancelled }) { done, total -> InstallService.packProgress(app, done, total) }
+                            Npu.setEngine(app, SpeechEngine.KOKORO_NPU)
+                        }
+                        refresh()
+                    }
+                },
+                deleteKokoro = { if (!busy()) { stopPreview(); if (Npu.engine(this) == SpeechEngine.KOKORO_NPU) Npu.setEngine(this, SpeechEngine.CPU); Kokoro.delete(this); refresh() } },
+                retryKokoro = { stopPreview(); Kokoro.release(); refresh() },
+                selectKokoroVoice = { id -> stopPreview(); Kokoro.selectVoice(this, id); refresh() }
             ))
         }
         refresh()
@@ -209,11 +231,27 @@ class SettingsActivity : ComponentActivity() {
             deleting = InstallService.deleting, ready = selectedEntry != null && !busy(), busy = busy(), loading = state is Model.State.Loading,
             status = if (busy()) getString(if (InstallService.deleting) R.string.deleting_model else R.string.installing_model) else status, error = state is Model.State.Failed,
             operation = localError ?: InstallService.message,
-            npu = NpuUiState(supported = Npu.supported(), installed = Npu.installed(this),
-                enabled = Npu.enabled(this) && Npu.installed(this), failed = Npu.failure != null,
-                status = if (Npu.supported()) Npu.status(this) else "", soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else "unknown",
-                voices = if (Npu.supported()) Npu.voices(this) else emptyList(), voice = if (Npu.supported()) Npu.voice(this) else "",
-                outdated = Npu.supported() && Npu.outdated(this)),
+            npu = run {
+                val npuInstalled = Npu.installed(this)
+                val kokoroInstalled = Kokoro.installed(this)
+                val activeEngine = when (Npu.engine(this)) {
+                    SpeechEngine.PHONON_NPU -> if (npuInstalled) SpeechEngine.PHONON_NPU else SpeechEngine.CPU
+                    SpeechEngine.KOKORO_NPU -> if (kokoroInstalled) SpeechEngine.KOKORO_NPU else SpeechEngine.CPU
+                    SpeechEngine.CPU -> SpeechEngine.CPU
+                }
+                NpuUiState(
+                    supported = Npu.supported(), installed = npuInstalled,
+                    enabled = activeEngine == SpeechEngine.PHONON_NPU, failed = Npu.failure != null,
+                    status = if (Npu.supported()) Npu.status(this) else "", soc = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL else "unknown",
+                    voices = if (Npu.supported()) Npu.voices(this) else emptyList(), voice = if (Npu.supported()) Npu.voice(this) else "",
+                    outdated = Npu.supported() && Npu.outdated(this),
+                    engine = activeEngine,
+                    kokoroInstalled = kokoroInstalled, kokoroFailed = Kokoro.failure != null,
+                    kokoroStatus = if (Kokoro.supported()) Kokoro.status(this) else "",
+                    kokoroVoices = if (Kokoro.supported()) Kokoro.voices(this) else emptyList(),
+                    kokoroVoice = if (Kokoro.supported()) Kokoro.voice(this) else "",
+                )
+            },
             speaking = ui.speaking && preview?.isSpeaking == true)
     }
     override fun onResume() { super.onResume(); resumed = true; handler.post(poll) }

@@ -38,11 +38,14 @@ internal data class SettingsUiState(
     val confirmReplacement: Boolean = false, val licenseText: String? = null,
     val npu: NpuUiState = NpuUiState()
 )
-/** The speech-engine card: CPU everywhere, the NPU only where its bundle was compiled for the SoC. */
+/** The speech-engine card: CPU everywhere, the NPU engines only where their bundles were compiled for the SoC. */
 internal data class NpuUiState(
     val supported: Boolean = false, val installed: Boolean = false, val enabled: Boolean = false,
     val failed: Boolean = false, val status: String = "", val soc: String = "",
-    val voices: List<Npu.Voice> = emptyList(), val voice: String = "", val outdated: Boolean = false
+    val voices: List<Npu.Voice> = emptyList(), val voice: String = "", val outdated: Boolean = false,
+    val engine: SpeechEngine = SpeechEngine.CPU,
+    val kokoroInstalled: Boolean = false, val kokoroFailed: Boolean = false,
+    val kokoroStatus: String = "", val kokoroVoices: List<Kokoro.Voice> = emptyList(), val kokoroVoice: String = ""
 )
 internal data class SettingsActions(
     val deleteInstalled: (String) -> Unit,
@@ -56,8 +59,10 @@ internal data class SettingsActions(
     val systemSettings: () -> Unit, val confirmReplacement: () -> Unit,
     val dismissReplacement: () -> Unit, val licenses: () -> Unit, val dismissLicenses: () -> Unit,
     val benchmark: () -> Unit,
-    val selectEngine: (Boolean) -> Unit, val downloadNpu: () -> Unit, val deleteNpu: () -> Unit, val retryNpu: () -> Unit,
-    val selectNpuVoice: (String) -> Unit
+    val selectEngine: (SpeechEngine) -> Unit, val downloadNpu: () -> Unit, val deleteNpu: () -> Unit, val retryNpu: () -> Unit,
+    val selectNpuVoice: (String) -> Unit,
+    val downloadKokoro: () -> Unit, val deleteKokoro: () -> Unit, val retryKokoro: () -> Unit,
+    val selectKokoroVoice: (String) -> Unit
 )
 
 private val SageLight = lightColorScheme(
@@ -233,38 +238,93 @@ internal fun SettingsScreen(state: SettingsUiState, actions: SettingsActions) {
 @Composable private fun EngineCard(state: SettingsUiState, actions: SettingsActions) {
     val npu = state.npu
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var confirmDeleteKokoro by rememberSaveable { mutableStateOf(false) }
     ElevatedCard(Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionLabel("Speech engine")
             Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ModelChoiceRow("CPU", "Works on every phone, every language and every voice.",
-                    selected = !npu.enabled, enabled = !state.busy, onClick = { actions.selectEngine(false) })
-                ModelChoiceRow("NPU (neural processor)",
-                    if (npu.supported) "About 2.5x faster than the CPU. English only, with its own voices (below); other languages use the CPU."
-                    else "Not available on this phone (${npu.soc}): the NPU model is compiled for the Galaxy S23 (SM8550).",
-                    selected = npu.enabled, enabled = !state.busy && npu.supported && npu.installed,
-                    onClick = { actions.selectEngine(true) },
-                    annotations = if (npu.supported && !npu.installed) listOf("Download the NPU model first.") else emptyList())
+                    selected = npu.engine == SpeechEngine.CPU, enabled = !state.busy, onClick = { actions.selectEngine(SpeechEngine.CPU) })
+                ModelChoiceRow("Phonon NPU (neural processor)",
+                    if (npu.supported) "About 2.5x faster than the CPU. English only, 37 voices; other languages use the CPU."
+                    else "Not available on this phone (${npu.soc}): compiled for the Galaxy S23 (SM8550).",
+                    selected = npu.engine == SpeechEngine.PHONON_NPU, enabled = !state.busy && npu.supported && npu.installed,
+                    onClick = { actions.selectEngine(SpeechEngine.PHONON_NPU) },
+                    annotations = if (npu.supported && !npu.installed) listOf("Download the Phonon NPU model first.") else emptyList())
+                ModelChoiceRow("Kokoro-82M NPU (neural processor)",
+                    if (npu.supported) "Kokoro-82M v1.0 (HTP vocoder + int8 front end). English only, 28 voices; other languages use the CPU."
+                    else "Not available on this phone (${npu.soc}): compiled for the Galaxy S23 (SM8550).",
+                    selected = npu.engine == SpeechEngine.KOKORO_NPU, enabled = !state.busy && npu.supported && npu.kokoroInstalled,
+                    onClick = { actions.selectEngine(SpeechEngine.KOKORO_NPU) },
+                    annotations = if (npu.supported && !npu.kokoroInstalled) listOf("Download the Kokoro NPU model first.") else emptyList())
             }
             if (npu.status.isNotBlank()) Text(npu.status, Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (npu.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-            if (npu.supported && npu.installed && npu.voices.isNotEmpty()) NpuVoiceSelect(npu, enabled = !state.busy, onSelect = actions.selectNpuVoice)
+            if (npu.supported && npu.installed && npu.voices.isNotEmpty() && npu.engine != SpeechEngine.KOKORO_NPU) {
+                NpuVoiceSelect(npu, enabled = !state.busy, onSelect = actions.selectNpuVoice)
+            }
             if (npu.supported) {
                 if (!npu.installed) FilledTonalButton(onClick = actions.downloadNpu, enabled = !state.busy,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(if (npu.outdated) "Update NPU model (${Npu.SIZE_LABEL})" else "Download NPU model (${Npu.SIZE_LABEL})") }
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(if (npu.outdated) "Update Phonon NPU (${Npu.SIZE_LABEL})" else "Download Phonon NPU (${Npu.SIZE_LABEL})") }
                 else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (npu.failed) OutlinedButton(onClick = actions.retryNpu, enabled = !state.busy) { Text("Retry NPU") }
-                    TextButton(onClick = { confirmDelete = true }, enabled = !state.busy) { Text("Delete NPU model") }
+                    if (npu.failed) OutlinedButton(onClick = actions.retryNpu, enabled = !state.busy) { Text("Retry Phonon NPU") }
+                    TextButton(onClick = { confirmDelete = true }, enabled = !state.busy) { Text("Delete Phonon NPU") }
+                }
+            }
+            if (npu.supported) {
+                HorizontalDivider()
+                if (npu.kokoroStatus.isNotBlank()) Text(npu.kokoroStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (npu.kokoroFailed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (npu.kokoroInstalled && npu.kokoroVoices.isNotEmpty()) {
+                    KokoroVoiceSelect(npu, enabled = !state.busy, onSelect = actions.selectKokoroVoice)
+                }
+                if (!npu.kokoroInstalled) FilledTonalButton(onClick = actions.downloadKokoro, enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Download Kokoro NPU (${Kokoro.SIZE_LABEL})") }
+                else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (npu.kokoroFailed) OutlinedButton(onClick = actions.retryKokoro, enabled = !state.busy) { Text("Retry Kokoro NPU") }
+                    TextButton(onClick = { confirmDeleteKokoro = true }, enabled = !state.busy) { Text("Delete Kokoro NPU") }
                 }
             }
         }
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
-        title = { Text("Delete the NPU model?") },
-        text = { Text("Speech switches to the CPU. You can download the NPU model again later.") },
+        title = { Text("Delete the Phonon NPU model?") },
+        text = { Text("Speech switches to the CPU. You can download the Phonon NPU model again later.") },
         confirmButton = { TextButton(onClick = { confirmDelete = false; actions.deleteNpu() }) { Text("Delete") } },
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(stringResource(android.R.string.cancel)) } })
+    if (confirmDeleteKokoro) AlertDialog(onDismissRequest = { confirmDeleteKokoro = false },
+        title = { Text("Delete the Kokoro NPU model?") },
+        text = { Text("Speech switches to the CPU. You can download the Kokoro NPU model again later.") },
+        confirmButton = { TextButton(onClick = { confirmDeleteKokoro = false; actions.deleteKokoro() }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { confirmDeleteKokoro = false }) { Text(stringResource(android.R.string.cancel)) } })
+}
+
+/** Kokoro's 28 English voices, grouped female then male. Used for English whenever Kokoro NPU is selected. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun KokoroVoiceSelect(npu: NpuUiState, enabled: Boolean, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val current = npu.kokoroVoices.firstOrNull { it.id == npu.kokoroVoice }
+    fun detail(v: Kokoro.Voice) = listOfNotNull(v.group, v.accent).joinToString(" · ")
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (enabled) expanded = it }) {
+        OutlinedTextField(value = current?.let { "${it.name} · ${detail(it)}" } ?: npu.kokoroVoice, onValueChange = {}, readOnly = true, enabled = enabled,
+            label = { Text("Kokoro voice (English)") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).fillMaxWidth())
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            var group: String? = null
+            npu.kokoroVoices.forEach { v ->
+                if (v.group != group) {
+                    group = v.group
+                    Text(v.group, Modifier.padding(horizontal = 16.dp, vertical = 8.dp).semantics { heading() },
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                }
+                DropdownMenuItem(
+                    text = { Text("${v.name} · ${v.accent ?: ""}" + (if (v.id == npu.kokoroVoice) "  ✓" else "")) },
+                    onClick = { onSelect(v.id); expanded = false })
+            }
+        }
+    }
 }
 
 /** The NPU's English voices, grouped female, male, character. Used for English whenever the NPU is on. */

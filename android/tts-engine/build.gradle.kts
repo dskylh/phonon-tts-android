@@ -80,6 +80,9 @@ dependencies {
     // Phonon on the Snapdragon NPU (see libs/README.md); the local AAR does not bring its POM dependency.
     implementation(files("libs/ptts-release.aar"))
     implementation("com.qualcomm.qti:qnn-runtime:2.50.0")
+    // Kokoro-82M on the Snapdragon NPU (vocoder on HTP v73, int8 front end on ORT CPU, Misaki + eSpeak NG G2P).
+    implementation(files("libs/kokoro-npu-release.aar"))
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.32.0")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

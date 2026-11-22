@@ -87,12 +87,19 @@ class PhononService : TextToSpeechService() {
                     if (android.os.Build.VERSION.SDK_INT >= 26) callback.rangeStart(frame, start, end)
                 },
             ).speak(text, Locale.forLanguageTag(lang))
-            // The NPU speaks English in the NPU voice picked in settings (Zoey by default). If it is unavailable, fails to load, or fails
-            // before any audio went out, the CPU speaks instead (Npu disables itself after a failure).
-            val onNpu = if (Npu.wanted(this, lang)) {
-                try { Npu.use(this) { npu -> sentences { sentence, pcm -> SpeechStats.npu.incrementAndGet(); npu.speak(sentence, pcm) } } }
-                catch (e: Exception) { if (sent || stopped) throw e; Log.w(TAG, "NPU failed, retrying on the CPU", e); null }
-            } else null
+            // The selected NPU engine speaks English in its own voice. If it is unavailable, fails to load, or fails
+            // before any audio went out, the CPU speaks instead (the NPU engine disables itself after a failure).
+            val onNpu = when {
+                Kokoro.wanted(this, lang) -> {
+                    try { Kokoro.use(this) { kokoro -> sentences { sentence, pcm -> SpeechStats.kokoro.incrementAndGet(); kokoro.speak(sentence, onPcm = pcm) } } }
+                    catch (e: Exception) { if (sent || stopped) throw e; Log.w(TAG, "Kokoro NPU failed, retrying on the CPU", e); null }
+                }
+                Npu.wanted(this, lang) -> {
+                    try { Npu.use(this) { npu -> sentences { sentence, pcm -> SpeechStats.npu.incrementAndGet(); npu.speak(sentence, pcm) } } }
+                    catch (e: Exception) { if (sent || stopped) throw e; Log.w(TAG, "NPU failed, retrying on the CPU", e); null }
+                }
+                else -> null
+            }
             val result = onNpu ?: Model.use(this,choice.entry) { model ->
                 model.tts.setLanguage(lang)
                 if (speaker in model.speakers) model.tts.setVoice(speaker)

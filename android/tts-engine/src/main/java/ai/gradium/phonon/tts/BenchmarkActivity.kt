@@ -2,6 +2,7 @@ package ai.gradium.phonon.tts
 
 import ai.gradium.phonon.PhononTTS as NpuTTS
 import ai.gradium.phonon.cpu.PhononTTS
+import ai.gradium.phonon.kokoro.KokoroTTS
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -45,7 +46,7 @@ class BenchmarkActivity : ComponentActivity() {
     private var lines by mutableStateOf(listOf<String>())
     private var running by mutableStateOf(false)
     private var threads by mutableStateOf(2)
-    private var onNpu by mutableStateOf(false)
+    private var selectedEngine by mutableStateOf(SpeechEngine.CPU)
     @Volatile private var cancelled = false
     private var worker: Thread? = null
 
@@ -53,7 +54,11 @@ class BenchmarkActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         threads = Threads.configured(this)
-        onNpu = Npu.enabled(this) && Npu.installed(this)
+        selectedEngine = when (Npu.engine(this)) {
+            SpeechEngine.PHONON_NPU -> if (Npu.supported() && Npu.installed(this)) SpeechEngine.PHONON_NPU else SpeechEngine.CPU
+            SpeechEngine.KOKORO_NPU -> if (Kokoro.supported() && Kokoro.installed(this)) SpeechEngine.KOKORO_NPU else SpeechEngine.CPU
+            SpeechEngine.CPU -> SpeechEngine.CPU
+        }
         lines = listOf(deviceLine())
         setContent { BenchmarkScreen() }
     }
@@ -100,19 +105,23 @@ class BenchmarkActivity : ComponentActivity() {
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
                     val npuReady = Npu.supported() && Npu.installed(this@BenchmarkActivity)
+                    val kokoroReady = Kokoro.supported() && Kokoro.installed(this@BenchmarkActivity)
                     Text("Engine to test", style = MaterialTheme.typography.bodyMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (!onNpu) Button(onClick = {}, enabled = !running) { Text("CPU") }
-                        else OutlinedButton(onClick = { onNpu = false }, enabled = !running) { Text("CPU") }
-                        if (onNpu) Button(onClick = {}, enabled = !running) { Text("NPU") }
-                        else OutlinedButton(onClick = { onNpu = true }, enabled = !running && npuReady) { Text("NPU") }
+                        if (selectedEngine == SpeechEngine.CPU) Button(onClick = {}, enabled = !running) { Text("CPU") }
+                        else OutlinedButton(onClick = { selectedEngine = SpeechEngine.CPU }, enabled = !running) { Text("CPU") }
+                        if (selectedEngine == SpeechEngine.PHONON_NPU) Button(onClick = {}, enabled = !running) { Text("Phonon NPU") }
+                        else OutlinedButton(onClick = { selectedEngine = SpeechEngine.PHONON_NPU }, enabled = !running && npuReady) { Text("Phonon NPU") }
+                        if (selectedEngine == SpeechEngine.KOKORO_NPU) Button(onClick = {}, enabled = !running) { Text("Kokoro NPU") }
+                        else OutlinedButton(onClick = { selectedEngine = SpeechEngine.KOKORO_NPU }, enabled = !running && kokoroReady) { Text("Kokoro NPU") }
                     }
-                    if (!npuReady) Text(if (Npu.supported()) "Download the NPU model in settings to test the NPU."
-                        else "The NPU model only runs on ${Npu.SOC} (Galaxy S23).", style = MaterialTheme.typography.bodySmall)
-                    if (!onNpu) Text("CPU threads (also used when reading aloud): " + (Threads.active?.let { "$it in use" } ?: "not loaded yet"),
+                    if (!npuReady && !kokoroReady) Text(if (Npu.supported()) "Download an NPU model in settings to test the NPU."
+                        else "The NPU models only run on ${Npu.SOC} (Galaxy S23).", style = MaterialTheme.typography.bodySmall)
+                    val isCpu = selectedEngine == SpeechEngine.CPU
+                    if (isCpu) Text("CPU threads (also used when reading aloud): " + (Threads.active?.let { "$it in use" } ?: "not loaded yet"),
                         style = MaterialTheme.typography.bodyMedium)
                     var pending by remember { mutableStateOf(threads) }
-                    if (!onNpu) Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    if (isCpu) Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Slider(value = pending.toFloat(), onValueChange = { pending = kotlin.math.round(it).toInt() },
                             valueRange = 1f..Threads.MAX.toFloat(), steps = (Threads.MAX - 2).coerceAtLeast(0),
@@ -120,20 +129,20 @@ class BenchmarkActivity : ComponentActivity() {
                         Text("$pending", style = MaterialTheme.typography.titleMedium)
                     }
                     val changes = pending != threads || (Threads.active != null && Threads.active != pending)
-                    if (!onNpu) OutlinedButton(onClick = { pickThreads(pending) }, enabled = !running && changes,
+                    if (isCpu) OutlinedButton(onClick = { pickThreads(pending) }, enabled = !running && changes,
                         modifier = Modifier.fillMaxWidth()) {
                         Text(if (Threads.active == null) "Use $pending threads" else "Use $pending threads (restarts the app)")
                     }
-                    Button(onClick = { val npu = onNpu; start { speedTest(npu, text, runs.toIntOrNull()?.coerceIn(2, 50) ?: 5) } },
+                    Button(onClick = { val eng = selectedEngine; start { speedTest(eng, text, runs.toIntOrNull()?.coerceIn(2, 50) ?: 5) } },
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run speed test") }
-                    FilledTonalButton(onClick = { val npu = onNpu; start { batteryTest(npu, text, seconds.toIntOrNull()?.coerceIn(20, 1800) ?: 120) } },
+                    FilledTonalButton(onClick = { val eng = selectedEngine; start { batteryTest(eng, text, seconds.toIntOrNull()?.coerceIn(20, 1800) ?: 120) } },
                         enabled = !running && text.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Run battery test") }
                     HorizontalDivider()
                     Text("Listening test", style = MaterialTheme.typography.titleMedium)
                     Text("Reads the chapter aloud through the system speech service, one paragraph at a time like " +
-                        "Reikai. Three phases of the same length: idle (nothing playing), CPU, then NPU. Unplug the " +
+                        "Reikai. Runs equal phases: idle (nothing playing), CPU, and each installed NPU engine. Unplug the " +
                         "phone, set the volume low and keep the screen the way you read (on or off) for the whole " +
-                        "test; it records how long the screen was on. A short chapter just repeats. Total time is 3 × the minutes below.", style = MaterialTheme.typography.bodySmall)
+                        "test; it records how long the screen was on. A short chapter just repeats.", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(chapter, { chapter = it }, label = { Text("Chapter text (${chapter.length} characters, " +
                         "${chapter.lines().count { it.isNotBlank() }} paragraphs)") },
                         enabled = !running, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth())
@@ -197,10 +206,12 @@ class BenchmarkActivity : ComponentActivity() {
     private class Run(val samples: Long, val ttfaMs: Double, val totalMs: Double)
     private class Handle(val label: String, val loadMs: Double, val speak: (String) -> Run, val close: () -> Unit)
 
-    /** Open a fresh engine (CPU or NPU), timing the load, run [work] with it, then close it. */
-    private fun <T> withEngine(npu: Boolean, work: (Handle) -> T): T? =
-        if (npu) synchronized(Npu.lock) { openNpu()?.let { h -> try { work(h) } finally { h.close() } } }
-        else synchronized(Model.lifecycle) { openCpu()?.let { h -> try { work(h) } finally { h.close() } } }
+    /** Open a fresh engine (CPU, Phonon NPU, or Kokoro NPU), timing the load, run [work] with it, then close it. */
+    private fun <T> withEngine(engine: SpeechEngine, work: (Handle) -> T): T? = when (engine) {
+        SpeechEngine.PHONON_NPU -> synchronized(Npu.lock) { openNpu()?.let { h -> try { work(h) } finally { h.close() } } }
+        SpeechEngine.KOKORO_NPU -> synchronized(Kokoro.lock) { openKokoro()?.let { h -> try { work(h) } finally { h.close() } } }
+        SpeechEngine.CPU -> synchronized(Model.lifecycle) { openCpu()?.let { h -> try { work(h) } finally { h.close() } } }
+    }
 
     /** The selected CPU checkpoint in its own handle. Caller holds [Model.lifecycle]. */
     private fun openCpu(): Handle? {
@@ -237,11 +248,36 @@ class BenchmarkActivity : ComponentActivity() {
             { text -> tts.speak(text) { !cancelled }.let { Run(it.samples, it.ttfaMs, it.totalMs) } }, { tts.close() })
     }
 
-    private fun speedTest(npu: Boolean, text: String, runs: Int) {
+    /** The Kokoro NPU bundle in a fresh engine (the system engine's copy is closed first). Caller holds [Kokoro.lock]. */
+    private fun openKokoro(): Handle? {
+        if (!Kokoro.supported() || !Kokoro.installed(applicationContext)) { log("Kokoro NPU model not available on this phone."); return null }
+        Kokoro.release()
+        val t0 = SystemClock.elapsedRealtimeNanos()
+        val tts = try { KokoroTTS.load(applicationContext, Kokoro.dir(applicationContext)) } catch (t: Throwable) {
+            log("Kokoro NPU load failed: $t")
+            var cause = t.cause
+            while (cause != null) { log("  caused by: $cause"); cause = cause.cause }
+            log("  See logcat (tags KokoroNpu, QNN) for details.")
+            return null
+        }
+        val loadMs = (SystemClock.elapsedRealtimeNanos() - t0) / 1e6
+        val voice = Kokoro.voice(applicationContext)
+        Kokoro.applyVoice(tts, voice)
+        return Handle("Kokoro NPU · S23 bundle · en · ${Kokoro.voiceDisplayName(applicationContext, voice)} ($voice) · ${tts.voices.size} voices · ${tts.sampleRate} Hz", loadMs,
+            { text -> tts.speak(text) { !cancelled }.let { Run(it.samples, it.ttfaMs, it.totalMs) } }, { tts.close() })
+    }
+
+    private fun engineTag(engine: SpeechEngine) = when (engine) {
+        SpeechEngine.CPU -> "CPU threads=${Threads.active ?: Threads.configured(applicationContext)}"
+        SpeechEngine.PHONON_NPU -> "Phonon NPU"
+        SpeechEngine.KOKORO_NPU -> "Kokoro NPU"
+    }
+
+    private fun speedTest(engine: SpeechEngine, text: String, runs: Int) {
         log("")
-        log("== Speed test · ${if (npu) "NPU" else "CPU"} · ${text.length} chars · $runs runs")
+        log("== Speed test · ${engineTag(engine)} · ${text.length} chars · $runs runs")
         log("Thermal at start: ${thermal()}")
-        withEngine(npu) { handle ->
+        withEngine(engine) { handle ->
             log("Model: ${handle.label}")
             log("Load time: ${fmt(handle.loadMs / 1000, 2)} s")
             val results = mutableListOf<Run>()
@@ -261,15 +297,15 @@ class BenchmarkActivity : ComponentActivity() {
         log("Thermal at end: ${thermal()}")
     }
 
-    private fun batteryTest(npu: Boolean, text: String, seconds: Int) {
+    private fun batteryTest(engine: SpeechEngine, text: String, seconds: Int) {
         log("")
-        log("== Battery test · ${if (npu) "NPU" else "CPU threads=${Threads.active ?: Threads.configured(applicationContext)}"} · ${seconds}s idle + ${seconds}s generating")
+        log("== Battery test · ${engineTag(engine)} · ${seconds}s idle + ${seconds}s generating")
         if (charging()) log("WARNING: the phone is charging; current readings are meaningless. Unplug it.")
         log("Thermal at start: ${thermal()}")
         val idle = sample(seconds) { !cancelled }
         if (cancelled) { log("Cancelled."); return }
         log("Idle: ${fmt(idle.meanMa, 0)} mA (${idle.samples} samples)")
-        withEngine(npu) { handle ->
+        withEngine(engine) { handle ->
             log("Model: ${handle.label}")
             var audio = 0.0
             var busyMs = 0.0
@@ -316,13 +352,15 @@ class BenchmarkActivity : ComponentActivity() {
         val sentences = paragraphs.sumOf { SentenceSpans.split(it, Locale.ENGLISH).size }
         val seconds = minutes * 60
         val npuReady = Npu.supported() && Npu.installed(applicationContext)
+        val kokoroReady = Kokoro.supported() && Kokoro.installed(applicationContext)
         log("")
         log("== Listening test · ${paragraphs.size} paragraphs · $sentences sentences · " +
             "${fmt(chapter.length.toDouble() / sentences.coerceAtLeast(1), 0)} chars per sentence · " +
             "${fmt(chapter.length.toDouble() / paragraphs.size, 0)} per paragraph · $minutes min per phase")
         if (charging()) log("WARNING: the phone is charging; current readings are meaningless. Unplug it.")
-        if (!npuReady) log("NPU model not available: the NPU phase is skipped.")
-        val npuWas = Npu.enabled(applicationContext)
+        if (!npuReady) log("Phonon NPU model not available: skipped.")
+        if (!kokoroReady) log("Kokoro NPU model not available: skipped.")
+        val engineWas = Npu.engine(applicationContext)
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         val lock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "phonon:listen-test")
         // The paragraph being spoken and its latch; callbacks for any other utterance are ignored.
@@ -356,16 +394,16 @@ class BenchmarkActivity : ComponentActivity() {
             if (cancelled) { log("Cancelled."); return }
             log("Idle (nothing playing): ${fmt(idle.meanMa, 0)} mA (${idle.samples} samples)${screenNote(idle)}")
 
-            class Phase(val name: String, val reading: Reading, val paragraphs: Int, val npu: Long, val cpu: Long)
-            fun listen(npu: Boolean): Phase? {
-                Npu.setEnabled(applicationContext, npu)
+            class Phase(val engine: SpeechEngine, val name: String, val reading: Reading, val paragraphs: Int, val npu: Long, val kokoro: Long, val cpu: Long)
+            fun listen(eng: SpeechEngine): Phase? {
+                Npu.setEngine(applicationContext, eng)
                 var next = 0
                 var spoken = 0
-                val npu0 = SpeechStats.npu.get(); val cpu0 = SpeechStats.cpu.get()
+                val npu0 = SpeechStats.npu.get(); val kokoro0 = SpeechStats.kokoro.get(); val cpu0 = SpeechStats.cpu.get()
                 failed.set(false)
                 val reading = sample(seconds, intervalMs = 1000, onEnd = { tts.stop(); finished.get()?.second?.countDown() }, background = work@{
                     val latch = java.util.concurrent.CountDownLatch(1)
-                    val id = "${if (npu) "npu" else "cpu"}-$next"
+                    val id = "${eng.name.lowercase()}-$next"
                     finished.set(id to latch)
                     tts.speak(paragraphs[next % paragraphs.size], TextToSpeech.QUEUE_ADD, null, id)
                     next++
@@ -373,14 +411,22 @@ class BenchmarkActivity : ComponentActivity() {
                     if (!failed.get()) spoken++
                 }) { !cancelled }
                 if (cancelled) { log("Cancelled."); return null }
-                val name = if (npu) "NPU (${Npu.voice(applicationContext)})" else "CPU (threads=${Threads.active ?: Threads.configured(applicationContext)})"
-                val phase = Phase(name, reading, spoken, SpeechStats.npu.get() - npu0, SpeechStats.cpu.get() - cpu0)
+                val name = when (eng) {
+                    SpeechEngine.PHONON_NPU -> "Phonon NPU (${Npu.voice(applicationContext)})"
+                    SpeechEngine.KOKORO_NPU -> "Kokoro NPU (${Kokoro.voiceDisplayName(applicationContext)})"
+                    SpeechEngine.CPU -> "CPU (threads=${Threads.active ?: Threads.configured(applicationContext)})"
+                }
+                val phase = Phase(eng, name, reading, spoken, SpeechStats.npu.get() - npu0, SpeechStats.kokoro.get() - kokoro0, SpeechStats.cpu.get() - cpu0)
                 log("$name: ${fmt(reading.meanMa, 0)} mA (${reading.samples} samples) · ${phase.paragraphs} paragraphs · " +
-                    "sentences on NPU ${phase.npu}, on CPU ${phase.cpu}${if (failed.get()) " · some paragraphs failed" else ""}${screenNote(reading)}")
+                    "sentences Phonon NPU ${phase.npu}, Kokoro NPU ${phase.kokoro}, CPU ${phase.cpu}${if (failed.get()) " · some paragraphs failed" else ""}${screenNote(reading)}")
                 log("Thermal: ${thermal()}")
                 return phase
             }
-            val phases = listOfNotNull(listen(false) ?: return, if (npuReady) (listen(true) ?: return) else null)
+            val phases = listOfNotNull(
+                listen(SpeechEngine.CPU) ?: return,
+                if (npuReady) (listen(SpeechEngine.PHONON_NPU) ?: return) else null,
+                if (kokoroReady) (listen(SpeechEngine.KOKORO_NPU) ?: return) else null,
+            )
 
             val capacity = capacityMah()
             fun share(mah: Double) = capacity?.let { " (${fmt(100 * mah / it, 2)}%)" } ?: ""
@@ -391,16 +437,17 @@ class BenchmarkActivity : ComponentActivity() {
             log("Per hour of listening (everything included, screen as during the test):")
             for (p in phases) log("  ${p.name}: ${fmt(p.reading.meanMa, 0)} mAh${share(p.reading.meanMa)} · " +
                 "extra over idle ${fmt(p.reading.meanMa - idle.meanMa, 0)} mAh${share(p.reading.meanMa - idle.meanMa)}")
-            if (phases.size == 2) {
-                val (cpu, npu) = phases
-                val saved = cpu.reading.meanMa - npu.reading.meanMa
-                log("  NPU vs CPU: ${if (saved >= 0) "saves" else "costs"} ${fmt(abs(saved), 0)} mAh per hour${share(abs(saved))}")
-                if (npu.npu == 0L) log("WARNING: nothing ran on the NPU in the NPU phase; check the NPU status in settings.")
+            val cpuPhase = phases.first()
+            for (p in phases.drop(1)) {
+                val saved = cpuPhase.reading.meanMa - p.reading.meanMa
+                log("  ${p.name} vs CPU: ${if (saved >= 0) "saves" else "costs"} ${fmt(abs(saved), 0)} mAh per hour${share(abs(saved))}")
+                val expectedCount = if (p.engine == SpeechEngine.KOKORO_NPU) p.kokoro else p.npu
+                if (expectedCount == 0L) log("WARNING: nothing ran on ${p.name} in its phase; check its status in settings.")
             }
             capacity?.let { log("Battery capacity estimate: ${fmt(it, 0)} mAh") }
             log("Percentages use that estimate. Hours of listening on a full battery = capacity ÷ mAh per hour.")
         } finally {
-            Npu.setEnabled(applicationContext, npuWas)
+            Npu.setEngine(applicationContext, engineWas)
             tts.stop(); tts.shutdown()
             if (lock.isHeld) lock.release()
             ListenTestService.stop(applicationContext)

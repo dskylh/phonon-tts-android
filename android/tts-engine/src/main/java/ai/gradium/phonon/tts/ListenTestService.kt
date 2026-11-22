@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 /** Sentences synthesized per engine since the process started; the listening test reads the difference. */
 object SpeechStats {
     val npu = AtomicLong()
+    val kokoro = AtomicLong()
     val cpu = AtomicLong()
 }
 

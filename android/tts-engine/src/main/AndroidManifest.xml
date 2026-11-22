@@ -3,8 +3,8 @@
     <!-- AndroidX core adds this for its optional receiver helper; this app registers none. -->
     <permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
     <uses-permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
-    <!-- The NPU library needs Android 12; the app checks the version before using it. -->
-    <uses-sdk tools:overrideLibrary="ai.gradium.phonon" />
+    <!-- The NPU libraries need Android 12; the app checks the version before using them. -->
+    <uses-sdk tools:overrideLibrary="ai.gradium.phonon,ai.gradium.phonon.kokoro" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

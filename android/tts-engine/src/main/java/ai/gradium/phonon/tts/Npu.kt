@@ -16,6 +16,9 @@ import org.json.JSONObject
 import javax.net.ssl.HttpsURLConnection
 import ai.gradium.phonon.PhononTTS as NpuTTS
 
+/** Which synthesis engine handles English speech in [PhononService] and [BenchmarkActivity]. */
+enum class SpeechEngine { CPU, PHONON_NPU, KOKORO_NPU }
+
 /**
  * Phonon on the Snapdragon NPU (Qualcomm HTP), for the one phone this bundle was compiled for:
  * SoC SM8550 (Galaxy S23). English only, with the bundle's voices (Zoey, female, by default). Everywhere else, and whenever loading fails,
@@ -106,11 +109,31 @@ object Npu {
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences("npu", Context.MODE_PRIVATE)
-    fun enabled(context: Context) = prefs(context).getBoolean("enabled", false)
-    fun setEnabled(context: Context, on: Boolean) {
-        prefs(context).edit().putBoolean("enabled", on).apply()
-        if (!on) release()
+    fun engine(context: Context): SpeechEngine {
+        val p = prefs(context)
+        return when (p.getString("engine", null)) {
+            "phonon_npu" -> SpeechEngine.PHONON_NPU
+            "kokoro_npu" -> SpeechEngine.KOKORO_NPU
+            "cpu" -> SpeechEngine.CPU
+            else -> if (p.getBoolean("enabled", false)) SpeechEngine.PHONON_NPU else SpeechEngine.CPU
+        }
     }
+    fun setEngine(context: Context, choice: SpeechEngine) {
+        val key = when (choice) {
+            SpeechEngine.CPU -> "cpu"
+            SpeechEngine.PHONON_NPU -> "phonon_npu"
+            SpeechEngine.KOKORO_NPU -> "kokoro_npu"
+        }
+        prefs(context).edit()
+            .putString("engine", key)
+            .putBoolean("enabled", choice == SpeechEngine.PHONON_NPU)
+            .apply()
+        if (choice != SpeechEngine.PHONON_NPU) release()
+        if (choice != SpeechEngine.KOKORO_NPU) Kokoro.release()
+    }
+    fun enabled(context: Context) = engine(context) == SpeechEngine.PHONON_NPU
+    fun setEnabled(context: Context, on: Boolean) =
+        setEngine(context, if (on) SpeechEngine.PHONON_NPU else SpeechEngine.CPU)
 
     /** Whether the system engine should try the NPU for [language]. */
     fun wanted(context: Context, language: String) =

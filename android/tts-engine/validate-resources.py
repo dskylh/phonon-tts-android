@@ -58,7 +58,7 @@ for voice in legacy['voices']:
     assert current['sha256'] == voice['sha256'] and current['bytes'] == voice['bytes']
 assert not list(assets.rglob('*.safetensors'))
 ui = (app / 'src/main/java/ai/gradium/phonon/tts/SettingsScreen.kt').read_text()
-assert ui.count('ModelChoiceRow(') == 5  # two model pickers, two engine choices, one shared implementation
+assert ui.count('ModelChoiceRow(') == 6  # two model pickers, three engine choices, one shared implementation
 row = ui[ui.index('private fun ModelChoiceRow'):]
 assert 'verticalAlignment = Alignment.CenterVertically' in row
 assert 'Alignment.Top' not in row and 'onClick = null' in row

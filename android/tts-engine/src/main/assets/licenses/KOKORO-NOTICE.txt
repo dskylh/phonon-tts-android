@@ -1,0 +1,18 @@
+Kokoro-82M on the Snapdragon NPU (optional download, Galaxy S23 only)
+
+Model and voices: hexgrad/Kokoro-82M (v1.0 ONNX, 28 English voices), Apache License 2.0.
+  Split into an int8 ONNX CPU front end, CPU harmonic source and iSTFT, and Qualcomm HTP v73
+  vocoder buckets with supplied per-voice AdaIN statistics. Downloaded bundle keeps LICENSE and NOTICE.
+
+Misaki G2P (libmisaki_android.so): adapted from cedgeremek/kokoro-offline-tts-android (native/misaki-android)
+  and hexgrad/misaki dictionaries, Apache License 2.0.
+
+ONNX Runtime Android (com.microsoft.onnxruntime:onnxruntime-android 1.32.0): MIT License.
+
+Kokoro NPU JNI runner (libkokoro_npu.so): QNN wrapper from gradium-ai/xn-ptts (MIT License)
+  with Kokoro window streaming runner.
+
+eSpeak NG 1.52.0 (libespeak-ng.so and espeak-ng-data/ in the downloaded bundle):
+  GNU General Public License v3.0 or later (GPL-3.0-or-later).
+  Used as an out-of-vocabulary English pronunciation fallback loaded dynamically by libmisaki_android.so.
+  Source: https://github.com/espeak-ng/espeak-ng (tag 1.52.0).
